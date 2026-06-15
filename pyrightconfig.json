@@ -1,0 +1,15 @@
+{
+    "typeCheckingMode": "basic",
+    "reportMissingTypeArgument": "none",
+    "reportUnknownParameterType": "none",
+    "reportUnknownMemberType": "none",
+    "reportUnknownArgumentType": "none",
+    "reportUnknownVariableType": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalSubscript": "none",
+    "reportMissingParameterType": "none",
+    "reportGeneralTypeIssues": "warning",
+    "pythonVersion": "3.10",
+    "venvPath": ".",
+    "venv": ".venv"
+}

@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Databases
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Logs
+*.log
+*.log.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local-only notes (never push)
+NOTES.local.md
+*.local.md
+
+# Auto-generated guild inventory dumps (refreshed hourly by the bot)
+data/guild-scan-*.txt
+
+# Channel history dumps (created on-demand via /lfg dump-channel)
+data/channel-dump-*.txt
+*.log.*

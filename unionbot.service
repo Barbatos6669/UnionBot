@@ -1,0 +1,45 @@
+[Unit]
+Description=UnionBot Discord bot
+# Wait until the network is actually online (not just configured) before starting,
+# otherwise the bot can fail DNS at boot when Wi-Fi/Ethernet is still negotiating.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unionbot
+Group=unionbot
+WorkingDirectory=/opt/unionbot
+
+# Use the venv's python so dependencies resolve correctly.
+ExecStart=/opt/unionbot/.venv/bin/python /opt/unionbot/bot.py
+
+# Restart on any kind of exit (crash, killed by OOM, manually stopped, etc.)
+# but space restart attempts so we don't tight-loop if Discord is down or
+# rate-limiting the gateway login (40062). 60s floor + a low burst cap means
+# a sustained outage triggers systemd to back off rather than spam Discord.
+Restart=on-failure
+RestartSec=60s
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+# Allow the bot up to 30s to clean up SQLite + close the gateway gracefully
+# when stopped (`systemctl stop unionbot` or system reboot).
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# Send Python's stdout/stderr straight to journalctl with no buffering so
+# `journalctl -u unionbot -f` shows logs in real time.
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+# Light hardening — bot doesn't need elevated privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/unionbot/data
+
+[Install]
+WantedBy=multi-user.target
