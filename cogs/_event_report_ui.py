@@ -19,7 +19,7 @@ def _parse_silver_amount(raw: str | None) -> int:
     text = str(raw or "").strip().lower().replace(",", "").replace("_", "")
     if not text:
         return 0
-    text = text.replace("silver", "").replace("s", "").strip()
+    text = re.sub(r"\bsilver\b", "", text).strip()
     multiplier = 1
     suffixes = (
         ("million", 1_000_000),

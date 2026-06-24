@@ -2027,15 +2027,17 @@ async def _run_nightly_backup(bot: Bot) -> None:
 
     stamp = _now().strftime("%Y%m%d-%H%M%S")
     dest = backup_dir / f"db-{stamp}-auto.db"
-    src = bot.db.connection
-    if src is None:
-        error_log("nightly backup: DB connection is closed.")
+    db_path = getattr(bot.db, "database_path", None)
+    if not db_path:
+        error_log("nightly backup: DB path is unavailable.")
         return
 
     def _do_backup() -> tuple[bool, str]:
         try:
-            with sqlite3.connect(str(dest)) as bck:
-                src.backup(bck)
+            with sqlite3.connect(str(db_path), timeout=30) as src:
+                src.execute("PRAGMA busy_timeout=5000")
+                with sqlite3.connect(str(dest)) as bck:
+                    src.backup(bck)
             return True, ""
         except Exception as exc:  # noqa: BLE001
             return False, repr(exc)

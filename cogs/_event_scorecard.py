@@ -8,38 +8,14 @@ from __future__ import annotations
 
 import datetime as dt
 import traceback
-from typing import Any
 
 import discord
 
+from cogs._event_report_time import event_window as _event_window
+from cogs._event_report_time import parse_dt as _parse_dt
 from cogs._graphs_primitives import _empty_panel, _fig_to_file, _fmt_compact, _style_axes
 from cogs._graphs_theme import ACCENT, PALETTE, TEXT_COLOR
 from debug import error_log
-
-
-UTC = dt.timezone.utc
-
-
-def _parse_dt(value: Any) -> dt.datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def _event_window(event: dict) -> tuple[dt.datetime | None, dt.datetime | None, dt.datetime | None, dt.datetime | None]:
-    starts_at = _parse_dt(event.get("starts_at"))
-    ends_at = _parse_dt(event.get("ends_at"))
-    prep = int(event.get("prep_minutes") or 0)
-    review = int(event.get("review_minutes") or 0)
-    report_start = starts_at - dt.timedelta(minutes=max(0, prep)) if starts_at else None
-    report_end = ends_at + dt.timedelta(minutes=max(0, review)) if ends_at else None
-    return starts_at, ends_at, report_start, report_end
 
 
 def _short_label(value: str, limit: int = 18) -> str:

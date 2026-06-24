@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from collections import defaultdict
-from typing import Any
 
 import discord
 
@@ -23,6 +22,8 @@ from cogs._event_report_format import (
     discord_ts as _discord_ts,
     fmt_num as _fmt_num,
 )
+from cogs._event_report_time import event_window as _event_window
+from cogs._event_report_time import parse_dt as _parse_dt
 from cogs._event_report_ui import build_event_report_view, register_persistent_event_report_views
 from cogs._event_scorecard import build_event_scorecard_graph
 from cogs.regear import (
@@ -49,18 +50,6 @@ ALBIONBB_MAX_BATTLES = 30
 ALBIONBB_MIN_PLAYERS = 1
 GEAR_PRICING_TIMEOUT_SECONDS = 25
 EMBED_TOTAL_SAFE_LIMIT = 5600
-
-
-def _parse_dt(value: Any) -> dt.datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _append_paged_fields(
@@ -125,25 +114,6 @@ def _regear_death_line(
     return (
         f"{linked} - {_fmt_num(death.get('fame'))} fame, {loc}, "
         f"killed by {killer}. Signup: {signed}; VC: yes. {value_text}."
-    )
-
-
-def _event_window(event: dict) -> tuple[dt.datetime | None, dt.datetime | None, dt.datetime | None, dt.datetime | None]:
-    starts_at = _parse_dt(event.get("starts_at"))
-    ends_at = _parse_dt(event.get("ends_at"))
-    if not starts_at or not ends_at:
-        return starts_at, ends_at, starts_at, ends_at
-    prep = max(0, int(event.get("prep_minutes") or 30))
-    review = max(0, int(event.get("review_minutes") or 15))
-    report_end = ends_at + dt.timedelta(minutes=review)
-    voice_deleted_at = _parse_dt(event.get("voice_channel_deleted_at"))
-    if voice_deleted_at and voice_deleted_at > report_end:
-        report_end = voice_deleted_at
-    return (
-        starts_at,
-        ends_at,
-        starts_at - dt.timedelta(minutes=prep),
-        report_end,
     )
 
 
