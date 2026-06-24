@@ -9,8 +9,14 @@ from cogs._nickname_tags import (
     extract_tagged_nickname_name,
     tagged_nickname_for_profile,
 )
-from cogs.users_profile import RegisterView, _audit_member_roles, sync_member_to_albion, _resolve_home_guild
-from config import HOME_GUILD_ROLE_NAME, LIFECYCLE_ROLES, STAFF_ROLES
+from cogs.users_profile import (
+    RegisterView,
+    _audit_member_roles,
+    build_registration_embed,
+    sync_member_to_albion,
+    _resolve_home_guild,
+)
+from config import LIFECYCLE_ROLES, STAFF_ROLES
 from utils import (
     SERVER_CHOICES,
     confirm_action,
@@ -20,13 +26,20 @@ from utils import (
 )
 import albion_api
 
+CFG_LIFECYCLE_VC_INACTIVITY_DAYS = "lifecycle_vc_inactivity_days"
+CFG_LIFECYCLE_STAT_INACTIVITY_DAYS = "lifecycle_stat_inactivity_days"
+CFG_LIFECYCLE_INACTIVITY_MODE = "lifecycle_inactivity_mode"
+DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS = 7
+DEFAULT_LIFECYCLE_STAT_INACTIVITY_DAYS = 14
+DEFAULT_LIFECYCLE_INACTIVITY_MODE = "either"
+
 # All roles the bot expects to exist, with colours and whether they're hoisted in the member list
 _REQUIRED_ROLES = [
     {"name": "Unverified",        "color": discord.Color.from_str("#747f8d"), "hoist": False},
     {"name": "Verified",          "color": discord.Color.from_str("#43b581"), "hoist": False},
     {"name": "Synced",            "color": discord.Color.from_str("#43b581"), "hoist": False},
     {"name": "NotSynced",         "color": discord.Color.from_str("#747f8d"), "hoist": False},
-    {"name": HOME_GUILD_ROLE_NAME, "color": discord.Color.from_str("#f04747"), "hoist": True},
+    {"name": "HomeGuild",    "color": discord.Color.from_str("#f04747"), "hoist": True},
     {"name": "Captain",           "color": discord.Color.from_str("#9b59b6"), "hoist": True},
     {"name": "Officer",           "color": discord.Color.from_str("#3498db"), "hoist": True},
     {"name": "Steward",           "color": discord.Color.from_str("#16a085"), "hoist": True},
@@ -34,10 +47,12 @@ _REQUIRED_ROLES = [
     {"name": "Logistician",       "color": discord.Color.from_str("#f1c40f"), "hoist": True},
     {"name": "Crafter",           "color": discord.Color.from_str("#e67e22"), "hoist": True},
     {"name": "Refiner",           "color": discord.Color.from_str("#95a5a6"), "hoist": True},
+    {"name": "Alchemist",         "color": discord.Color.from_str("#9b59b6"), "hoist": True},
     {"name": "Guild Farmer",      "color": discord.Color.from_str("#2ecc71"), "hoist": True},
     {"name": "Gatherer",          "color": discord.Color.from_str("#27ae60"), "hoist": True},
     {"name": "Senior Shotcaller", "color": discord.Color.from_str("#e74c3c"), "hoist": True},
     {"name": "Shotcaller",        "color": discord.Color.from_str("#e67e22"), "hoist": True},
+    {"name": "Squad Leader",      "color": discord.Color.from_str("#00b894"), "hoist": True},
     {"name": "Recruiter",         "color": discord.Color.from_str("#2ecc71"), "hoist": True},
     {"name": "Recruit",           "color": discord.Color.from_str("#979c9f"), "hoist": True},
     {"name": "Probationary",      "color": discord.Color.from_str("#f0a500"), "hoist": True},
@@ -135,51 +150,8 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
     @app_commands.command(name="setup-registration", description="Set up the registration message in the current channel.")
     async def setup_registration(self, interaction: discord.Interaction) -> None:
         """Sends a message with the registration button."""
-        embed = discord.Embed(
-            title="Guild Registration \u00b7 Registro \u00b7 Registro",
-            description=(
-                "\ud83c\uddec\ud83c\udde7 Link your Discord account to your Albion Online character so the guild can "
-                "track your activity, fame, and progression.\n"
-                "\ud83c\uddea\ud83c\uddf8 Vincula tu cuenta de Discord con tu personaje de Albion Online para que el "
-                "gremio pueda seguir tu actividad, fama y progreso.\n"
-                "\ud83c\udde7\ud83c\uddf7 Vincule sua conta do Discord ao seu personagem de Albion Online para que a "
-                "guilda possa acompanhar sua atividade, fama e progresso."
-            ),
-            color=discord.Color.green(),
-        )
-        embed.add_field(
-            name="\ud83c\uddec\ud83c\udde7 How it works",
-            value=(
-                "1\ufe0f\u20e3 Click **Register** below.\n"
-                "2\ufe0f\u20e3 Enter your **Albion character name** and **server** (Americas / Europe / Asia).\n"
-                "3\ufe0f\u20e3 Post a **screenshot of your character screen** in this channel within 5 minutes.\n"
-                "4\ufe0f\u20e3 An officer reviews and approves \u2014 you'll get a DM when it's done."
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="\ud83c\uddea\ud83c\uddf8 C\u00f3mo funciona",
-            value=(
-                "1\ufe0f\u20e3 Haz clic en **Registrarse** abajo.\n"
-                "2\ufe0f\u20e3 Ingresa el **nombre de tu personaje** y el **servidor** (Americas / Europe / Asia).\n"
-                "3\ufe0f\u20e3 Publica una **captura de la pantalla de tu personaje** en este canal en menos de 5 minutos.\n"
-                "4\ufe0f\u20e3 Un oficial revisa y aprueba \u2014 recibir\u00e1s un MD cuando est\u00e9 listo."
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="\ud83c\udde7\ud83c\uddf7 Como funciona",
-            value=(
-                "1\ufe0f\u20e3 Clique em **Cadastrar-se** abaixo.\n"
-                "2\ufe0f\u20e3 Digite o **nome do seu personagem** e o **servidor** (Americas / Europe / Asia).\n"
-                "3\ufe0f\u20e3 Poste uma **captura da tela do seu personagem** neste canal em at\u00e9 5 minutos.\n"
-                "4\ufe0f\u20e3 Um oficial revisa e aprova \u2014 voc\u00ea receber\u00e1 uma DM quando estiver pronto."
-            ),
-            inline=False,
-        )
-        embed.set_footer(text="Not in the guild? Register first, then Apply. \u00b7 \u00bfNo est\u00e1s en el gremio? Reg\u00edstrate primero y luego postula. \u00b7 N\u00e3o est\u00e1 na guilda? Cadastre-se primeiro e depois candidate-se.")
         self.bot.db.set_config("registration_channel_id", str(interaction.channel.id))
-        await interaction.channel.send(embed=embed, view=RegisterView(self.bot))
+        await interaction.channel.send(embed=build_registration_embed(), view=RegisterView(self.bot))
         await interaction.response.send_message(
             embed=success_embed(
                 "Registration message posted",
@@ -552,15 +524,27 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
             color = discord.Color.from_str("#d4af37")
         footer_name = (db.get_config("announce_footer_name") or "Officer SOP").strip()
 
-        # Pull the current inactivity threshold so the SOP shows the real number.
-        from cogs._automation_helpers import _DEFAULT_INACTIVE_DAYS
+        # Pull the current lifecycle inactivity thresholds so the SOP shows the
+        # real numbers officers will see during sync.
         try:
-            inactive_days = int(
-                db.get_config("automation_inactivity_threshold_days")
-                or _DEFAULT_INACTIVE_DAYS
+            vc_inactive_days = int(
+                db.get_config(CFG_LIFECYCLE_VC_INACTIVITY_DAYS)
+                or DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS
             )
         except (TypeError, ValueError):
-            inactive_days = _DEFAULT_INACTIVE_DAYS
+            vc_inactive_days = DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS
+        try:
+            stat_inactive_days = int(
+                db.get_config(CFG_LIFECYCLE_STAT_INACTIVITY_DAYS)
+                or DEFAULT_LIFECYCLE_STAT_INACTIVITY_DAYS
+            )
+        except (TypeError, ValueError):
+            stat_inactive_days = DEFAULT_LIFECYCLE_STAT_INACTIVITY_DAYS
+        inactive_mode = (
+            db.get_config(CFG_LIFECYCLE_INACTIVITY_MODE)
+            or DEFAULT_LIFECYCLE_INACTIVITY_MODE
+        ).strip().lower()
+        inactive_joiner = "and" if inactive_mode == "both" else "or"
 
         embed = discord.Embed(
             title="\ud83c\udfdb\ufe0f Officer SOP \u2014 Lifecycle Roles",
@@ -586,8 +570,10 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
                 "**30\u201389 days** of tenure. Full member.\n"
                 "\u2022 **Veteran** \u2014 verified, in the home guild, "
                 f"**90+ days** of tenure. Eligible for senior staff applications.\n"
-                "\u2022 **Inactive** \u2014 no stat changes (kill fame, PvE, "
-                f"gathering, crafting) for **{inactive_days}+ days**. "
+                "\u2022 **Inactive** \u2014 no guild VC for "
+                f"**{vc_inactive_days}+ days** {inactive_joiner} no stat "
+                "movement (kill fame, PvE, gathering, crafting) for "
+                f"**{stat_inactive_days}+ days**. "
                 "Replaces Probationary/Member/Veteran while quiet.\n"
                 "\u2022 **Alumni** \u2014 was in the home guild, **no longer is**. "
                 "Kept in Discord as a former member.\n\n"
@@ -605,7 +591,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
                 "\u2022 Adds **Recruit** the moment a new Discord join is detected.\n"
                 "\u2022 Promotes **Recruit \u2192 Probationary** once verified + in the home guild.\n"
                 "\u2022 Promotes **Probationary \u2192 Member \u2192 Veteran** by tenure (30 / 90 days).\n"
-                "\u2022 Swaps the active rank to **Inactive** after the inactivity threshold.\n"
+                "\u2022 Swaps the active rank to **Inactive** after the configured VC/stat inactivity thresholds.\n"
                 "\u2022 Swaps to **Alumni** when a member leaves the home guild.\n"
                 "Officers should **not** touch lifecycle roles while the bot is "
                 "online \u2014 manual edits get overwritten on the next sync."
@@ -940,7 +926,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
 
         verified_role = discord.utils.get(interaction.guild.roles, name="Verified")
         unverified_role = discord.utils.get(interaction.guild.roles, name="Unverified")
-        tu_role = discord.utils.get(interaction.guild.roles, name=HOME_GUILD_ROLE_NAME)
+        tu_role = discord.utils.get(interaction.guild.roles, name="HomeGuild")
         lifecycle_role = discord.utils.get(interaction.guild.roles, name=old_lifecycle) if old_lifecycle else None
 
         roles_to_remove = [r for r in [verified_role, tu_role, lifecycle_role] if r and r in member.roles]
@@ -1142,7 +1128,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
         verified_role = discord.utils.get(interaction.guild.roles, name="Verified")
         recruit_role = discord.utils.get(interaction.guild.roles, name="Recruit")
         guest_role = discord.utils.get(interaction.guild.roles, name="Guest")
-        tu_role = discord.utils.get(interaction.guild.roles, name=HOME_GUILD_ROLE_NAME)
+        tu_role = discord.utils.get(interaction.guild.roles, name="HomeGuild")
 
         try:
             if unverified_role and unverified_role in member.roles:
@@ -1254,7 +1240,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
         if new_role:
             await member.add_roles(new_role)
         if role.value in ("Inactive", "Alumni"):
-            tu_role = discord.utils.get(interaction.guild.roles, name=HOME_GUILD_ROLE_NAME)
+            tu_role = discord.utils.get(interaction.guild.roles, name="HomeGuild")
             if tu_role and tu_role in member.roles:
                 await member.remove_roles(
                     tu_role,
@@ -1262,7 +1248,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
                 )
 
         self.bot.db.set_lifecycle_role(str(member.id), role.value)
-        # If admin assigns a home-guild-earned role (or Alumni), mark them as having
+        # If admin assigns a TU-earned role (or Alumni), mark them as having
         # been in the home guild so future reconciles demote to Alumni instead
         # of Guest.
         if role.value in ("Recruit", "Member", "Veteran", "Alumni"):
@@ -1440,7 +1426,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
         label = "ex-member (Alumni track)" if was_in_home_guild else "guest (Guest track)"
         await interaction.response.send_message(
             embed=success_embed(
-                "home-guild history updated",
+                "TU history updated",
                 f"{member.mention} is now flagged as **{label}**. "
                 f"Run `/admin reconcile-now` to apply lifecycle changes.",
             ),
@@ -1489,22 +1475,61 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
             body = body[:1900] + "\n…(truncated)"
         await interaction.followup.send(body, ephemeral=True)
 
-    @app_commands.command(name="set-inactivity-days", description="Set how many days without stat changes before a member is marked Inactive.")
-    @app_commands.describe(days="Number of days of inactivity before the Inactive role is applied (1–365).")
+    @app_commands.command(name="set-inactivity-days", description="Set inactivity thresholds before a member is marked Inactive.")
+    @app_commands.describe(
+        days="Days without Albion stat movement before Inactive can apply (1–365).",
+        vc_days="Optional: days without joining guild VC before Inactive can apply.",
+        mode="Optional: either stale signal demotes, or both signals must be stale.",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Either VC or stat stale", value="either"),
+        app_commands.Choice(name="Both VC and stat stale", value="both"),
+    ])
     async def set_inactivity_days(
         self,
         interaction: discord.Interaction,
         days: app_commands.Range[int, 1, 365],
+        vc_days: app_commands.Range[int, 1, 365] | None = None,
+        mode: app_commands.Choice[str] | None = None,
     ) -> None:
         self.bot.db.set_config("inactivity_days", str(days))
+        self.bot.db.set_config(CFG_LIFECYCLE_STAT_INACTIVITY_DAYS, str(days))
+        if vc_days is not None:
+            self.bot.db.set_config(CFG_LIFECYCLE_VC_INACTIVITY_DAYS, str(int(vc_days)))
+        clean_mode = (mode.value if mode else "").strip().lower()
+        if clean_mode in {"either", "both"}:
+            self.bot.db.set_config(CFG_LIFECYCLE_INACTIVITY_MODE, clean_mode)
+        current_vc_days = (
+            str(int(vc_days))
+            if vc_days is not None else
+            str(self.bot.db.get_config(CFG_LIFECYCLE_VC_INACTIVITY_DAYS) or DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS)
+        )
+        current_mode = (
+            clean_mode
+            if clean_mode in {"either", "both"} else
+            str(self.bot.db.get_config(CFG_LIFECYCLE_INACTIVITY_MODE) or DEFAULT_LIFECYCLE_INACTIVITY_MODE)
+        )
+        mode_text = (
+            "either stale signal can demote"
+            if current_mode == "either" else
+            "both signals must be stale"
+        )
         await interaction.response.send_message(
             embed=success_embed(
-                "Inactivity threshold updated",
-                f"Members will be marked **Inactive** after **{days} days** without stat changes. Takes effect on the next hourly sync.",
+                "Lifecycle inactivity updated",
+                (
+                    f"VC threshold: **{current_vc_days} day(s)** without joining voice.\n"
+                    f"Stat threshold: **{int(days)} day(s)** without Albion stat movement.\n"
+                    f"Mode: **{current_mode}** ({mode_text}).\n"
+                    "Takes effect on the next hourly lifecycle sync."
+                ),
             ),
             ephemeral=True,
         )
-        info_log(f"{interaction.user} set inactivity_days to {days}.")
+        info_log(
+            f"{interaction.user} set lifecycle inactivity: "
+            f"stat={days} vc={current_vc_days} mode={current_mode}"
+        )
 
     @app_commands.command(name="set-lifecycle-thresholds", description="Set how many days in each lifecycle phase before auto-promotion.")
     @app_commands.describe(

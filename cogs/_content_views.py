@@ -51,6 +51,7 @@ from cogs._content_config import (
     cfg_int,
     is_officer,
     now_utc,
+    season_point_focus_recommendation_keys,
     utc_dt_for_discord,
 )
 from cogs._content_db import (
@@ -314,8 +315,17 @@ def _availability_slot_heading(label: str) -> str:
     return f"**{clean or 'Timer'}**"
 
 
-def _availability_content_summary(headcount: int) -> str:
-    keys = availability_recommendation_keys(headcount, limit=3)
+def _is_daily_timer_poll(poll: dict) -> bool:
+    return str(poll.get("title") or "").startswith("Daily Prime Timer Availability")
+
+
+def _availability_content_summary(
+    db, poll: dict, headcount: int,
+) -> str:
+    if _is_daily_timer_poll(poll):
+        keys = season_point_focus_recommendation_keys(db, headcount, limit=3)
+    else:
+        keys = availability_recommendation_keys(headcount, limit=3)
     if not keys:
         return "Needs more availability"
     labels: list[str] = []
@@ -328,14 +338,15 @@ def _availability_content_summary(headcount: int) -> str:
 
 def _daily_timer_content_guide() -> str:
     return "\n".join([
+        "Only season-point/Might-focused options are shown for daily prime planning.",
         "`0` No content vote yet; the timer needs availability.",
-        "`1` Solo-flexible: ⚔️ PvP, ⛏️ Gathering, or 💰 Economy planning.",
-        "`2` Adds 🔥 Hellgates, 🌫️ Duo Mists, 🕳️ Abyssal Depths, 🐾 Tracking, and 🐂 Transport.",
-        "`3-4` Adds 🗡️ Ganking, 🛡️ Small Scale, 🏴 Faction, 🛣️ Roads, and dungeon groups.",
-        "`5-9` Adds 🗝️ Avalonian Dungeons, 👹 World Boss, and 🏟️ Crystal Arena.",
-        "`10-14` Strong for open-world objective fights and larger faction groups.",
-        "`15+` Adds ⚔️ ZvZ; lower-headcount content can still be voted for.",
-        "The timer preview shows the top 3 options; the content vote can include up to 10 valid options.",
+        "`1` Solo-flexible Outlands/Roads push: ⚔️ PvP or ⛏️ Gathering.",
+        "`2` Adds 🔥 Hellgates, 🌫️ Duo Mists, 🕳️ Abyssal Depths, and 🐾 Tracking.",
+        "`3-4` Adds 🗡️ Ganking, 🛡️ Small Scale, 🛣️ Roads, and dungeon groups.",
+        "`5-14` Adds 🗝️ Avalonian Dungeons, 👹 World Boss, and larger objective groups.",
+        "`15+` Adds ⚔️ ZvZ; lower-headcount season options can still be voted for.",
+        "Faction, arena, economy, and transport are left out of this daily season-focus vote.",
+        "The timer preview shows the top 3 unlocked options; the content vote can include up to 10.",
     ])
 
 
@@ -409,7 +420,7 @@ def _availability_window_groups(
             claimed_lines.append("\n".join(parts))
             continue
 
-        plan = _availability_content_summary(n)
+        plan = _availability_content_summary(db, poll, n)
         parts = [f"`#{i + 1}` {heading} · **{n} available**"]
         if local_note:
             parts.append(f"Your time: {local_note}")
@@ -461,17 +472,19 @@ def availability_poll_embed(db, poll: dict) -> discord.Embed:
     color = discord.Color.teal() if is_open else discord.Color.dark_gray()
     title = "🗓️ Availability Poll" + (" — open" if is_open else " — closed")
     poll_title = str(poll.get("title") or "Planned event")
-    is_daily_timer_poll = poll_title.startswith("Daily Prime Timer Availability")
+    is_daily_timer_poll = _is_daily_timer_poll(poll)
     desc = [
         f"**{poll_title}**",
     ]
     if is_daily_timer_poll:
         desc.append(
             "This is the planning step before the LFG. Pick every timer you could make; "
-            "the bot will choose the strongest unclaimed timer, run a content vote, "
-            "then post one signup."
+            "the bot will choose the strongest unclaimed timer, run a season-focus "
+            "content vote, then post one signup."
         )
-        desc.append("Claimed timers are skipped and shown separately with their LFG link.")
+        desc.append(
+            "Claimed timers are skipped and shown separately with their LFG link."
+        )
     else:
         desc.append("Pick every window you can attend. Discord converts **Your time** for each viewer.")
     if is_open:

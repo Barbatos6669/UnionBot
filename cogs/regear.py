@@ -290,6 +290,201 @@ def _build_death_notes(summary: dict) -> str:
     return "\n".join(lines)[:1500]
 
 
+async def enrich_death_summaries_with_estimates(summaries: list[dict]) -> list[dict]:
+    """Attach AODP gear-value estimates to normalized death summaries.
+
+    This is shared by the manual "Regear from Death" picker and automatic LFG
+    event reports so both paths use the same pricing behavior.
+    """
+    try:
+        import market_api as _market_api
+        all_items: list[dict] = []
+        for summary in summaries:
+            all_items.extend(summary.get("gear_items") or [])
+        if not all_items:
+            return summaries
+
+        pooled = await asyncio.to_thread(_market_api.estimate_gear_value, all_items)
+        unit_prices: dict[tuple[str, int], int] = {}
+        for row in pooled.get("per_item") or []:
+            if row.get("missing"):
+                continue
+            unit_prices[(row["item_id"], int(row["quality"]))] = int(row["unit_price"])
+
+        for summary in summaries:
+            total = 0
+            priced = 0
+            missing_slots: list[str] = []
+            for item in summary.get("gear_items") or []:
+                key = (item["item_id"], int(item.get("quality") or 1))
+                unit_price = unit_prices.get(key, 0)
+                if unit_price > 0:
+                    total += unit_price * int(item.get("count") or 1)
+                    priced += 1
+                else:
+                    missing_slots.append(item.get("slot") or "?")
+            summary["estimated_value"] = int(total)
+            summary["estimated_priced_count"] = priced
+            summary["estimated_missing_slots"] = missing_slots
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"regear: gear value estimate failed: {exc!r}")
+    return summaries
+
+
+def _content_type_for_death(summary: dict, lfg_event: dict | None = None) -> str:
+    guessed = str(summary.get("guessed_content_type") or "").strip()
+    if guessed:
+        return guessed[:24]
+    event = lfg_event or {}
+    title = str(event.get("title") or "").lower()
+    event_type = str(event.get("event_type") or "").lower()
+    if "cta" in title or event_type in {"alliance", "zvz", "season", "siege", "castle"}:
+        return "CTA"
+    if "gank" in event_type:
+        return "Ganking"
+    if "mist" in event_type:
+        return "Mists"
+    if "hellgate" in event_type:
+        return "Hellgate"
+    if "ava" in event_type or "avalon" in title:
+        return "Avalon"
+    return "Other"
+
+
+def _append_chest_precheck(
+    db,
+    embed: discord.Embed,
+    gear_items: list[dict],
+    *,
+    request_id: int,
+) -> None:
+    """Add loadout chest availability to a review embed, best-effort."""
+    try:
+        if not gear_items:
+            return
+        ready, short = _chest_precheck(db, gear_items)
+        if not short:
+            embed.add_field(
+                name="📦 Chest pre-check",
+                value=f"✅ **Ready to ship** — all {ready} item(s) in stock.",
+                inline=False,
+            )
+            return
+        short_lines = "\n".join(
+            f"• `{iid}` — need **{need}**, have **{have}** (short {need - have})"
+            for iid, need, have in short[:8]
+        )
+        embed.add_field(
+            name="📦 Chest pre-check",
+            value=(
+                f"⚠️ **{len(short)} item(s) short** ({ready} in stock):\n"
+                f"{short_lines}"
+            ),
+            inline=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"chest pre-check failed for regear #{request_id}: {exc!r}")
+
+
+async def create_regear_review_from_death_summary(
+    bot: Bot,
+    *,
+    discord_id: str,
+    summary: dict,
+    lfg_event: dict | None = None,
+) -> tuple[int | None, str]:
+    """Create a pending officer regear review from a killboard death summary.
+
+    Returns ``(request_id, status)`` where status is one of ``created``,
+    ``duplicate``, ``not_configured``, ``no_value``, or ``failed``.
+    """
+    db = bot.db
+    death_event_id = int(summary.get("event_id") or 0)
+    if death_event_id <= 0:
+        return None, "failed"
+    if db.fetch_regear_request_for_death(str(discord_id), death_event_id):
+        return None, "duplicate"
+
+    review_channel_id = db.get_config("regear_review_channel_id")
+    if not review_channel_id:
+        return None, "not_configured"
+    try:
+        review_channel = bot.get_channel(int(review_channel_id)) or await bot.fetch_channel(int(review_channel_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+        review_channel = None
+    if not isinstance(review_channel, discord.TextChannel):
+        return None, "not_configured"
+
+    try:
+        applicant = review_channel.guild.get_member(int(discord_id)) or await bot.fetch_user(int(discord_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+        return None, "failed"
+
+    gear_value = int(summary.get("estimated_value") or 0)
+    if gear_value <= 0:
+        # Create a visible officer task anyway, but make it obvious that the
+        # value needs manual review instead of pretending kill fame is a price.
+        status = "no_value"
+    else:
+        status = "created"
+
+    lfg_prefix = ""
+    if lfg_event:
+        lfg_prefix = (
+            "**Auto-created from LFG attendance.**\n"
+            f"**LFG:** #{lfg_event.get('id')} {lfg_event.get('title') or 'Event'}\n"
+            "**Attendance:** confirmed in event VC.\n\n"
+        )
+    full_notes = (lfg_prefix + _build_death_notes(summary))[:1500]
+    request_id = db.create_regear_request(
+        discord_id=str(discord_id),
+        event_id=death_event_id,
+        content_type=_content_type_for_death(summary, lfg_event),
+        gear_value=gear_value,
+        image_url=summary.get("killboard_url") or None,
+        notes=full_notes,
+        gear_items_json=json.dumps(summary.get("gear_items") or []),
+    )
+    if not request_id:
+        return None, "failed"
+
+    embed = _build_review_embed(
+        request_id,
+        applicant,
+        _content_type_for_death(summary, lfg_event),
+        gear_value,
+        full_notes,
+        image_url=summary.get("killboard_url") or "",
+        use_attachment=False,
+    )
+    if gear_value <= 0:
+        embed.add_field(
+            name="Gear value",
+            value="No fresh AODP estimate found. Officer must price manually before approval.",
+            inline=False,
+        )
+    _append_chest_precheck(
+        db,
+        embed,
+        summary.get("gear_items") or [],
+        request_id=request_id,
+    )
+    try:
+        msg = await review_channel.send(embed=embed, view=build_review_view(request_id))
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        error_log(
+            f"auto regear review post failed for #{request_id} "
+            f"in {review_channel}: {exc!r}"
+        )
+        return request_id, "failed"
+    db.set_regear_review_message(request_id, str(review_channel.id), str(msg.id))
+    info_log(
+        f"Auto regear request #{request_id} created for {discord_id} "
+        f"death={death_event_id} value={gear_value:,}."
+    )
+    return request_id, status
+
+
 async def _start_from_death_flow(interaction: discord.Interaction) -> None:
     """Look up the user's last 5 deaths and show a picker. Bound to the
     'From Recent Death' board button."""
@@ -345,40 +540,9 @@ async def _start_from_death_flow(interaction: discord.Interaction) -> None:
 
     summaries = [albion_api.format_death_event(d) for d in deaths]
 
-    # Pre-compute AODP price estimates so the modal can default the gear
-    # value field. One pooled AODP call covers every item across all five
-    # deaths — the estimator handles missing data gracefully.
-    try:
-        import market_api as _market_api
-        all_items: list[dict] = []
-        for s in summaries:
-            all_items.extend(s.get("gear_items") or [])
-        if all_items:
-            pooled = await asyncio.to_thread(_market_api.estimate_gear_value, all_items)
-            # Index price lookups by (item_id, quality) → unit_price.
-            unit_prices: dict[tuple[str, int], int] = {}
-            for row in pooled.get("per_item") or []:
-                if row.get("missing"):
-                    continue
-                unit_prices[(row["item_id"], int(row["quality"]))] = int(row["unit_price"])
-            # Split the pooled prices back into per-summary totals.
-            for s in summaries:
-                total = 0
-                priced = 0
-                missing_slots: list[str] = []
-                for it in s.get("gear_items") or []:
-                    key = (it["item_id"], int(it.get("quality") or 1))
-                    up = unit_prices.get(key, 0)
-                    if up > 0:
-                        total += up * int(it.get("count") or 1)
-                        priced += 1
-                    else:
-                        missing_slots.append(it.get("slot") or "?")
-                s["estimated_value"] = int(total)
-                s["estimated_priced_count"] = priced
-                s["estimated_missing_slots"] = missing_slots
-    except Exception as exc:  # noqa: BLE001
-        error_log(f"regear: gear value estimate failed: {exc!r}")
+    # Pre-compute AODP price estimates so the modal can default the gear value
+    # field. One pooled AODP call covers every item across all five deaths.
+    summaries = await enrich_death_summaries_with_estimates(summaries)
 
     view = DeathPickerView(summaries)
     await interaction.followup.send(

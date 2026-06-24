@@ -3,18 +3,8 @@ Minimal `config.py` placeholders — add real values as you need them.
 This file contains lightweight defaults so old imports don't crash.
 """
 import datetime
-import os
 
-guild_name = os.getenv("HOME_GUILD_NAME", "HomeGuild")
-home_guild_role_name = os.getenv("HOME_GUILD_ROLE_NAME", guild_name)
-home_guild_nick_tag = os.getenv("HOME_GUILD_NICK_TAG", "HG")
-home_alliance_tag = os.getenv("HOME_ALLIANCE_TAG", "ALLY")
-
-# Uppercase aliases are easier to import from cogs without implying mutability.
-HOME_GUILD_NAME = guild_name
-HOME_GUILD_ROLE_NAME = home_guild_role_name
-HOME_GUILD_NICK_TAG = home_guild_nick_tag
-HOME_ALLIANCE_TAG = home_alliance_tag
+guild_name = "Your Guild Name"
 
 # Optional: server/guild identifiers (set via env vars instead when possible).
 # Prefer setting GUILD_DISCORD_ID in .env; leave this at None for production.
@@ -49,7 +39,7 @@ LIFECYCLE_ROLES = ["Recruit", "Probationary", "Member", "Veteran", "Inactive", "
 
 # Roles assigned by the staff-application system (officer review + auto rebalance).
 # Order matters: highest-authority first. Used for display and demotion priority.
-STAFF_ROLES = ["Captain", "Officer", "Steward", "Holdmaster", "Logistician", "Crafter", "Refiner", "Guild Farmer", "Gatherer", "Senior Shotcaller", "Shotcaller", "Recruiter"]
+STAFF_ROLES = ["Captain", "Officer", "Steward", "Holdmaster", "Logistician", "Crafter", "Refiner", "Alchemist", "Guild Farmer", "Gatherer", "Senior Shotcaller", "Shotcaller", "Recruiter"]
 
 # Per-rank rules:
 #   eligible      — lifecycle roles allowed to apply
@@ -67,6 +57,7 @@ STAFF_TIERS = {
     "Logistician":       {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 2},
     "Crafter":           {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 4},
     "Refiner":           {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 4},
+    "Alchemist":         {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 4},
     "Guild Farmer":      {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 6},
     "Gatherer":          {"eligible": ("Member", "Veteran"), "per_slot": 1, "max_cap": 5},
     "Senior Shotcaller": {"eligible": ("Veteran",),          "per_slot": 40, "max_cap": 5,
@@ -160,6 +151,18 @@ STAFF_DESCRIPTIONS = {
             "Doesn't refine personal gear with guild rss without approval.",
         ],
         "expected": "Honest with focus/rss usage, consistent, willing to share spec-up opportunities.",
+    },
+    "Alchemist": {
+        "purpose": "Potion and consumable specialist. Keeps the guild supplied with the potions needed for content, regear sets, and economy goals.",
+        "responsibilities": [
+            "Crafts priority potions for guild content, regear kits, and market goals.",
+            "Coordinates with Guild Farmers and Gatherers for herbs, farm output, and missing inputs.",
+            "Tracks potion stock, shortages, and high-use consumables after events.",
+            "Helps members understand which potions fit specific comps or content types.",
+            "Reports crafting costs, focus needs, and profitable potion opportunities to the Logistician.",
+            "Deposits guild-funded consumables into the correct storage instead of personal stock.",
+        ],
+        "expected": "Reliable with guild materials, understands potion demand, and communicates shortages before content starts.",
     },
     "Guild Farmer": {
         "purpose": "Guild island farmer. Maintains farms, animals, herbs, and food/potion inputs that support guild economy and content.",

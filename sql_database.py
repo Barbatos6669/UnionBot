@@ -491,7 +491,7 @@ class Database:
             ''')
             return [dict(row) for row in self.cursor.fetchall()]
         except sqlite3.Error as e:
-            debug.error_log(f"Error fetching home-guild history: {e}")
+            debug.error_log(f"Error fetching TU history: {e}")
             return []
 
     def fetch_all_registered_with_verified_date(self):
@@ -500,7 +500,7 @@ class Database:
                 self.connect()
             self.cursor.execute('''
                 SELECT discord_id, lifecycle_role, verified_date, last_activity_date,
-                       was_in_home_guild,
+                       was_in_home_guild, guild_name,
                        kill_fame, pve_total, gather_all
                 FROM user_profiles
                 WHERE albion_player_id IS NOT NULL
@@ -1934,6 +1934,38 @@ class Database:
             debug.error_log(f"Error fetching grant date for {discord_id}/{rank}: {e}")
             return None
 
+    def revoke_staff_grants(self, discord_id: str, ranks: list[str] | tuple[str, ...] | None = None) -> int:
+        """Remove staff-tenure rows for a member.
+
+        Used when a member leaves the home Albion guild and their Discord staff
+        positions are stripped. Keeping this table clean prevents dashboards
+        and prerequisite checks from treating them as still holding a role.
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            if ranks:
+                clean = [str(rank) for rank in ranks if str(rank).strip()]
+                if not clean:
+                    return 0
+                placeholders = ",".join("?" for _ in clean)
+                self.cursor.execute(
+                    f"DELETE FROM staff_role_grants "
+                    f"WHERE discord_id = ? AND rank IN ({placeholders})",
+                    (str(discord_id), *clean),
+                )
+            else:
+                self.cursor.execute(
+                    "DELETE FROM staff_role_grants WHERE discord_id = ?",
+                    (str(discord_id),),
+                )
+            removed = int(self.cursor.rowcount or 0)
+            self.connection.commit()
+            return removed
+        except sqlite3.Error as e:
+            debug.error_log(f"Error revoking staff grants for {discord_id}: {e}")
+            return 0
+
     def fetch_staff_holders_with_activity(self, rank: str, discord_ids: list):
         """Given a list of discord IDs holding a rank, return their last_activity_date and activity_points,
         ordered for demotion priority (least active first: oldest activity, then lowest points)."""
@@ -2091,6 +2123,7 @@ class Database:
         self.initialize_help_tickets_table()
         self.initialize_voice_activity_table()
         self.initialize_blacklist_table()
+        self.initialize_risk_watch_table()
         self.initialize_member_lifecycle_table()
         self.initialize_loadout_chest_tables()
         self.initialize_recruits_table()
@@ -2256,6 +2289,19 @@ class Database:
             CREATE TABLE IF NOT EXISTS event_voice_reconciled (
                 event_id    INTEGER PRIMARY KEY,
                 reconciled_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+        ''')
+        # Officer-entered loot summary for post-event reports. This is
+        # deliberately separate from /loot split: entering loot here updates
+        # analytics/profit-loss only and does not credit member balances.
+        self.execute('''
+            CREATE TABLE IF NOT EXISTS event_loot_summaries (
+                event_id    INTEGER PRIMARY KEY,
+                gross_loot  INTEGER NOT NULL DEFAULT 0,
+                guild_cut   INTEGER NOT NULL DEFAULT 0,
+                notes       TEXT,
+                updated_by  TEXT,
+                updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
             )
         ''')
         # SOP / policy snapshots — content_hash compared daily for drift.
@@ -2930,6 +2976,35 @@ class Database:
             debug.error_log(f"fetch_regear_request error: {e}")
             return None
 
+    def fetch_regear_request_for_death(
+        self,
+        discord_id: str,
+        killboard_event_id: int | str,
+    ) -> dict | None:
+        """Return an existing regear tied to a specific killboard death.
+
+        ``regear_requests.event_id`` stores the Albion killboard event id for
+        death-sourced requests. Used by event reports to avoid creating the
+        same automatic regear task twice.
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                """
+                SELECT * FROM regear_requests
+                WHERE discord_id = ? AND event_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (str(discord_id), int(killboard_event_id or 0)),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except (sqlite3.Error, TypeError, ValueError) as e:
+            debug.error_log(f"fetch_regear_request_for_death error: {e}")
+            return None
+
     def set_regear_review_message(
         self, request_id: int, channel_id: str, message_id: str,
     ) -> None:
@@ -3113,14 +3188,33 @@ class Database:
         )
 
     def fetch_active_event_window(self) -> list[dict]:
-        """Events currently 'live' — between starts_at and ends_at, not cancelled."""
+        """Events whose voice attendance should be snapshotted.
+
+        The scheduled end time is only an estimate. If an event has a temporary
+        event VC, keep snapshotting until that VC is deleted so long-running
+        content still counts for attendance/regear analytics.
+        """
         try:
             if not self.connection:
                 self.connect()
             now_iso = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
             self.cursor.execute(
-                "SELECT * FROM lfg_events "
-                "WHERE status != 'cancelled' AND starts_at <= ? AND ends_at >= ?",
+                """
+                SELECT e.* FROM lfg_events e
+                LEFT JOIN event_voice_reconciled r ON r.event_id = e.id
+                WHERE e.status != 'cancelled'
+                  AND r.event_id IS NULL
+                  AND datetime(e.starts_at, '-' || COALESCE(e.prep_minutes, 30) || ' minutes')
+                      <= datetime(?)
+                  AND (
+                        datetime(e.ends_at) >= datetime(?)
+                        OR (
+                            e.voice_channel_id IS NOT NULL
+                            AND e.voice_channel_id != ''
+                            AND e.voice_channel_deleted_at IS NULL
+                        )
+                  )
+                """,
                 (now_iso, now_iso),
             )
             return [dict(r) for r in self.cursor.fetchall()]
@@ -3128,23 +3222,47 @@ class Database:
             debug.error_log(f"fetch_active_event_window error: {e}")
             return []
 
-    def fetch_events_needing_reconciliation(self) -> list[dict]:
-        """Events whose ends_at has passed and that haven't been reconciled."""
+    def fetch_events_needing_reconciliation(
+        self,
+        fallback_grace_minutes: int = 30,
+    ) -> list[dict]:
+        """Ended events ready for voice-attendance reconciliation.
+
+        Events with temporary event VCs wait until the VC is deleted. That keeps
+        reports from firing while members are still doing content past the
+        scheduled end time. Legacy/no-VC events reconcile after the review
+        window plus a small grace period.
+        """
         try:
             if not self.connection:
                 self.connect()
             now_iso = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+            grace = max(0, int(fallback_grace_minutes or 0))
             self.cursor.execute('''
                 SELECT e.* FROM lfg_events e
                 LEFT JOIN event_voice_reconciled r ON r.event_id = e.id
                 WHERE e.status != 'cancelled'
-                  AND e.ends_at <= ?
+                  AND datetime(e.ends_at) <= datetime(?)
                   AND r.event_id IS NULL
+                  AND (
+                        (
+                            e.voice_channel_id IS NOT NULL
+                            AND e.voice_channel_id != ''
+                            AND e.voice_channel_deleted_at IS NOT NULL
+                        )
+                        OR (
+                            (e.voice_channel_id IS NULL OR e.voice_channel_id = '')
+                            AND datetime(
+                                e.ends_at,
+                                '+' || (COALESCE(e.review_minutes, 15) + ?) || ' minutes'
+                            ) <= datetime(?)
+                        )
+                  )
                 ORDER BY e.ends_at ASC
                 LIMIT 25
-            ''', (now_iso,))
+            ''', (now_iso, grace, now_iso))
             return [dict(r) for r in self.cursor.fetchall()]
-        except sqlite3.Error as e:
+        except (sqlite3.Error, TypeError, ValueError) as e:
             debug.error_log(f"fetch_events_needing_reconciliation error: {e}")
             return []
 
@@ -3196,11 +3314,86 @@ class Database:
             debug.error_log(f"fetch_voice_snapshot_summary error: {e}")
             return {}
 
+    def fetch_voice_snapshot_flow(self, event_id: int) -> list[dict]:
+        """Return per-snapshot VC population for an event.
+
+        Each tracker tick inserts one row per member present in the event voice
+        channel. Grouping by the timestamp gives the officer report a retention
+        curve instead of only a final attendance count.
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                """
+                SELECT snapshot_at, COUNT(DISTINCT discord_id) AS members
+                  FROM event_voice_snapshots
+                 WHERE event_id = ?
+                 GROUP BY snapshot_at
+                 ORDER BY datetime(snapshot_at) ASC
+                """,
+                (event_id,),
+            )
+            return [dict(r) for r in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_voice_snapshot_flow error: {e}")
+            return []
+
     def mark_event_reconciled(self, event_id: int) -> None:
         self.execute(
             "INSERT OR IGNORE INTO event_voice_reconciled (event_id) VALUES (?)",
             (event_id,),
         )
+
+    def upsert_event_loot_summary(
+        self,
+        event_id: int,
+        *,
+        gross_loot: int,
+        guild_cut: int = 0,
+        notes: str | None = None,
+        updated_by: str | None = None,
+    ) -> None:
+        """Store officer-entered loot value for an event report.
+
+        ``gross_loot`` is the estimated/sold value brought home. ``guild_cut``
+        is any amount held back by the guild before member distribution. This
+        is analytics-only; actual balance credits still go through /loot split.
+        """
+        self.execute(
+            """
+            INSERT INTO event_loot_summaries
+                (event_id, gross_loot, guild_cut, notes, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(event_id) DO UPDATE SET
+                gross_loot = excluded.gross_loot,
+                guild_cut = excluded.guild_cut,
+                notes = excluded.notes,
+                updated_by = excluded.updated_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(event_id),
+                max(0, int(gross_loot or 0)),
+                max(0, int(guild_cut or 0)),
+                notes,
+                updated_by,
+            ),
+        )
+
+    def fetch_event_loot_summary(self, event_id: int) -> dict | None:
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                "SELECT * FROM event_loot_summaries WHERE event_id = ?",
+                (int(event_id),),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_event_loot_summary error: {e}")
+            return None
 
     # ── Policy snapshots (SOP drift) ───────────────────────────────────────
 
@@ -4051,6 +4244,9 @@ class Database:
                 access_role_id TEXT,
                 access_role_created_at TEXT,
                 access_role_deleted_at TEXT,
+                cancel_reason TEXT,
+                cancelled_by TEXT,
+                cancelled_at TEXT,
                 status        TEXT NOT NULL DEFAULT 'open',  -- open / cancelled / completed
                 created_at    TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
             )
@@ -4103,6 +4299,9 @@ class Database:
             ("access_role_id", "TEXT"),
             ("access_role_created_at", "TEXT"),
             ("access_role_deleted_at", "TEXT"),
+            ("cancel_reason", "TEXT"),
+            ("cancelled_by", "TEXT"),
+            ("cancelled_at", "TEXT"),
         ):
             try:
                 if not self.connection:
@@ -4335,6 +4534,34 @@ class Database:
             debug.error_log(f"fetch_lfg_event_by_scheduled_id error: {e}")
             return None
 
+    def fetch_lfg_event_by_voice_channel_id(self, voice_channel_id: str | int) -> dict | None:
+        """Reverse-lookup an active LFG event from its temporary voice channel.
+
+        The scheduled event status may already be ``completed`` while the
+        temporary VC is still alive, because Albion runs often go long. As
+        long as the voice channel has not been deleted and the event was not
+        cancelled, treat a join/move into that VC as part of the event.
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                """
+                SELECT * FROM lfg_events
+                WHERE voice_channel_id = ?
+                  AND voice_channel_deleted_at IS NULL
+                  AND status != 'cancelled'
+                ORDER BY datetime(starts_at) DESC
+                LIMIT 1
+                """,
+                (str(voice_channel_id),),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_lfg_event_by_voice_channel_id error: {e}")
+            return None
+
     def fetch_lfg_event(self, event_id: int) -> dict | None:
         try:
             if not self.connection:
@@ -4418,8 +4645,15 @@ class Database:
                   AND status IN ('completed', 'cancelled')
                   AND (
                         status = 'cancelled'
-                        OR datetime(ends_at, '+' || COALESCE(review_minutes, 15) || ' minutes')
-                           <= datetime(?)
+                        OR (
+                            datetime(ends_at, '+' || COALESCE(review_minutes, 15) || ' minutes')
+                               <= datetime(?)
+                            AND (
+                                voice_channel_id IS NULL
+                                OR voice_channel_id = ''
+                                OR voice_channel_deleted_at IS NOT NULL
+                            )
+                        )
                   )
                 ORDER BY datetime(ends_at) ASC
                 LIMIT ?
@@ -4551,8 +4785,25 @@ class Database:
             debug.error_log(f"fetch_overlapping_prime_events error: {e}")
             return []
 
-    def cancel_lfg_event(self, event_id: int) -> None:
-        self.execute("UPDATE lfg_events SET status = 'cancelled' WHERE id = ?", (event_id,))
+    def cancel_lfg_event(
+        self,
+        event_id: int,
+        *,
+        reason: str | None = None,
+        cancelled_by: str | None = None,
+        cancelled_at: str | None = None,
+    ) -> None:
+        self.execute(
+            """
+            UPDATE lfg_events
+               SET status = 'cancelled',
+                   cancel_reason = COALESCE(?, cancel_reason),
+                   cancelled_by = COALESCE(?, cancelled_by),
+                   cancelled_at = COALESCE(?, cancelled_at)
+             WHERE id = ?
+            """,
+            (reason, cancelled_by, cancelled_at, event_id),
+        )
 
     def add_lfg_signup(self, event_id: int, discord_id: str) -> bool:
         """Returns True if added, False if already signed up."""
@@ -5296,6 +5547,212 @@ class Database:
         except sqlite3.Error as exc:
             debug.error_log(f"fetch_all_blacklist failed: {exc!r}")
             return []
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Albion risk watch: officer-only tracking for public guild/alliance
+    # movement of specific Albion characters. This does not message outside
+    # guilds automatically; it only gives officers a private review alert.
+    # ──────────────────────────────────────────────────────────────────────
+    def initialize_risk_watch_table(self) -> None:
+        self.execute('''
+            CREATE TABLE IF NOT EXISTS albion_risk_watch (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                albion_player_id    TEXT NOT NULL UNIQUE,
+                albion_name         TEXT,
+                server              TEXT NOT NULL DEFAULT 'americas',
+                reason              TEXT,
+                evidence_note       TEXT,
+                added_by            TEXT,
+                active              INTEGER NOT NULL DEFAULT 1,
+                last_guild_id       TEXT,
+                last_guild_name     TEXT,
+                last_alliance_id    TEXT,
+                last_alliance_name  TEXT,
+                last_alliance_tag   TEXT,
+                last_seen_at        TEXT,
+                last_alerted_at     TEXT,
+                added_at            TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+                updated_at          TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+        ''')
+        self.execute(
+            'CREATE INDEX IF NOT EXISTS idx_albion_risk_watch_active '
+            'ON albion_risk_watch (active, albion_player_id)'
+        )
+        debug.info_log("Initialized albion_risk_watch table.")
+
+    def add_risk_watch(
+        self,
+        *,
+        albion_player_id: str,
+        albion_name: str | None = None,
+        server: str = "americas",
+        reason: str | None = None,
+        evidence_note: str | None = None,
+        added_by: str | None = None,
+        last_guild_id: str | None = None,
+        last_guild_name: str | None = None,
+        last_alliance_id: str | None = None,
+        last_alliance_name: str | None = None,
+        last_alliance_tag: str | None = None,
+    ) -> None:
+        if not albion_player_id:
+            debug.error_log("add_risk_watch: missing albion_player_id")
+            return
+        try:
+            if not self.connection:
+                self.connect()
+            now = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+            self.cursor.execute(
+                '''
+                INSERT INTO albion_risk_watch (
+                    albion_player_id, albion_name, server, reason, evidence_note,
+                    added_by, active, last_guild_id, last_guild_name,
+                    last_alliance_id, last_alliance_name, last_alliance_tag,
+                    last_seen_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(albion_player_id) DO UPDATE SET
+                    albion_name        = excluded.albion_name,
+                    server             = excluded.server,
+                    reason             = excluded.reason,
+                    evidence_note      = excluded.evidence_note,
+                    added_by           = excluded.added_by,
+                    active             = 1,
+                    last_guild_id      = excluded.last_guild_id,
+                    last_guild_name    = excluded.last_guild_name,
+                    last_alliance_id   = excluded.last_alliance_id,
+                    last_alliance_name = excluded.last_alliance_name,
+                    last_alliance_tag  = excluded.last_alliance_tag,
+                    last_seen_at       = excluded.last_seen_at,
+                    updated_at         = excluded.updated_at
+                ''',
+                (
+                    str(albion_player_id),
+                    albion_name,
+                    server or "americas",
+                    reason,
+                    evidence_note,
+                    added_by,
+                    last_guild_id,
+                    last_guild_name,
+                    last_alliance_id,
+                    last_alliance_name,
+                    last_alliance_tag,
+                    now,
+                    now,
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.Error as exc:
+            debug.error_log(f"add_risk_watch failed: {exc!r}")
+
+    def remove_risk_watch(self, *, albion_player_id: str | None = None,
+                          albion_name: str | None = None) -> int:
+        if not albion_player_id and not albion_name:
+            return 0
+        try:
+            if not self.connection:
+                self.connect()
+            if albion_player_id:
+                self.cursor.execute(
+                    "UPDATE albion_risk_watch SET active = 0, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE albion_player_id = ?",
+                    (str(albion_player_id),),
+                )
+            else:
+                self.cursor.execute(
+                    "UPDATE albion_risk_watch SET active = 0, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE LOWER(albion_name) = LOWER(?)",
+                    (str(albion_name),),
+                )
+            changed = int(self.cursor.rowcount or 0)
+            self.connection.commit()
+            return changed
+        except sqlite3.Error as exc:
+            debug.error_log(f"remove_risk_watch failed: {exc!r}")
+            return 0
+
+    def fetch_risk_watch(self, albion_player_id: str) -> dict | None:
+        if not albion_player_id:
+            return None
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                "SELECT * FROM albion_risk_watch "
+                "WHERE albion_player_id = ? AND active = 1 LIMIT 1",
+                (str(albion_player_id),),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as exc:
+            debug.error_log(f"fetch_risk_watch failed: {exc!r}")
+            return None
+
+    def fetch_all_risk_watch(self, *, active_only: bool = True) -> list[dict]:
+        try:
+            if not self.connection:
+                self.connect()
+            where = "WHERE active = 1" if active_only else ""
+            self.cursor.execute(
+                f"SELECT * FROM albion_risk_watch {where} "
+                "ORDER BY active DESC, updated_at DESC, added_at DESC"
+            )
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as exc:
+            debug.error_log(f"fetch_all_risk_watch failed: {exc!r}")
+            return []
+
+    def update_risk_watch_seen(
+        self,
+        *,
+        albion_player_id: str,
+        albion_name: str | None = None,
+        guild_id: str | None = None,
+        guild_name: str | None = None,
+        alliance_id: str | None = None,
+        alliance_name: str | None = None,
+        alliance_tag: str | None = None,
+        alerted: bool = False,
+    ) -> None:
+        if not albion_player_id:
+            return
+        try:
+            if not self.connection:
+                self.connect()
+            now = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+            self.cursor.execute(
+                '''
+                UPDATE albion_risk_watch
+                SET albion_name = COALESCE(?, albion_name),
+                    last_guild_id = ?,
+                    last_guild_name = ?,
+                    last_alliance_id = ?,
+                    last_alliance_name = ?,
+                    last_alliance_tag = ?,
+                    last_seen_at = ?,
+                    last_alerted_at = CASE WHEN ? THEN ? ELSE last_alerted_at END,
+                    updated_at = ?
+                WHERE albion_player_id = ?
+                ''',
+                (
+                    albion_name,
+                    guild_id,
+                    guild_name,
+                    alliance_id,
+                    alliance_name,
+                    alliance_tag,
+                    now,
+                    1 if alerted else 0,
+                    now,
+                    now,
+                    str(albion_player_id),
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.Error as exc:
+            debug.error_log(f"update_risk_watch_seen failed: {exc!r}")
 
     # ──────────────────────────────────────────────────────────────────────
     # Member lifecycle events (joins / leaves) — append-only audit log so we

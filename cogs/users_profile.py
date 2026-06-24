@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from debug import error_log, info_log
-from config import HOME_GUILD_NAME, HOME_GUILD_ROLE_NAME, LIFECYCLE_ROLES, STAFF_ROLES, derive_lifecycle
+from config import LIFECYCLE_ROLES, STAFF_ROLES, derive_lifecycle
 from cogs._nickname_tags import tagged_nickname_for_profile
 from utils import error_embed, info_embed, mark_unionbot_handled, success_embed
 import albion_api
@@ -32,6 +32,7 @@ _REGISTRATION_TEXT_HELP_RE = re.compile(
 )
 
 _ALL_LIFECYCLE = set(LIFECYCLE_ROLES)
+_DEFAULT_ALBION_SERVER = "americas"
 
 # Albion character names: 2-16 chars, letters/digits/underscore/dash only.
 _ALBION_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{2,16}$")
@@ -118,6 +119,64 @@ def _pending_officer_review(profile) -> bool:
         return False
 
 
+def build_registration_embed() -> discord.Embed:
+    """Canonical public registration instructions.
+
+    The member-facing flow intentionally assumes Americas so new users only
+    have to know their Albion character name.
+    """
+    embed = discord.Embed(
+        title="Guild Registration \u00b7 Registro \u00b7 Registro",
+        description=(
+            "\ud83c\uddec\ud83c\udde7 Link your Discord account to your Albion Online character so the guild can "
+            "track your activity, fame, and progression.\n"
+            "\ud83c\uddea\ud83c\uddf8 Vincula tu cuenta de Discord con tu personaje de Albion Online para que el "
+            "gremio pueda seguir tu actividad, fama y progreso.\n"
+            "\ud83c\udde7\ud83c\uddf7 Vincule sua conta do Discord ao seu personagem de Albion Online para que a "
+            "guilda possa acompanhar sua atividade, fama e progresso."
+        ),
+        color=discord.Color.green(),
+    )
+    embed.add_field(
+        name="\ud83c\uddec\ud83c\udde7 How it works",
+        value=(
+            "1\ufe0f\u20e3 Click **Register** below.\n"
+            "2\ufe0f\u20e3 Enter your **Albion character name**. The bot uses the **Americas** server automatically.\n"
+            "3\ufe0f\u20e3 Post a **screenshot of your character screen** in this channel within 5 minutes.\n"
+            "4\ufe0f\u20e3 An officer reviews and approves \u2014 you'll get a DM when it's done."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="\ud83c\uddea\ud83c\uddf8 C\u00f3mo funciona",
+        value=(
+            "1\ufe0f\u20e3 Haz clic en **Registrarse** abajo.\n"
+            "2\ufe0f\u20e3 Ingresa el **nombre de tu personaje**. El bot usa el servidor **Americas** automáticamente.\n"
+            "3\ufe0f\u20e3 Publica una **captura de la pantalla de tu personaje** en este canal en menos de 5 minutos.\n"
+            "4\ufe0f\u20e3 Un oficial revisa y aprueba \u2014 recibir\u00e1s un MD cuando est\u00e9 listo."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="\ud83c\udde7\ud83c\uddf7 Como funciona",
+        value=(
+            "1\ufe0f\u20e3 Clique em **Cadastrar-se** abaixo.\n"
+            "2\ufe0f\u20e3 Digite o **nome do seu personagem**. O bot usa o servidor **Americas** automaticamente.\n"
+            "3\ufe0f\u20e3 Poste uma **captura da tela do seu personagem** neste canal em at\u00e9 5 minutos.\n"
+            "4\ufe0f\u20e3 Um oficial revisa e aprova \u2014 voc\u00ea receber\u00e1 uma DM quando estiver pronto."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text=(
+            "Not in the guild? Register first, then Apply. \u00b7 "
+            "\u00bfNo est\u00e1s en el gremio? Reg\u00edstrate primero y luego postula. \u00b7 "
+            "N\u00e3o est\u00e1 na guilda? Cadastre-se primeiro e depois candidate-se."
+        )
+    )
+    return embed
+
+
 def _registration_upload_nudge(profile) -> tuple[str, str, bool]:
     """Message shown when a screenshot is uploaded outside the active flow.
 
@@ -140,13 +199,13 @@ def _registration_upload_nudge(profile) -> tuple[str, str, bool]:
     if profile and profile.get("albion_player_id"):
         return (
             "Restart registration",
-            "That screenshot is not attached to an active registration. Click **Register**, enter your Albion name/server again, "
+            "That screenshot is not attached to an active registration. Click **Register**, enter your Albion name again, "
             "then post the screenshot after the bot asks for it.",
             True,
         )
     return (
         "Click Register first",
-        "I can only accept a screenshot after you click **Register** and enter your Albion character name/server. "
+        "I can only accept a screenshot after you click **Register** and enter your Albion character name. "
         "Uploading the image first does not give the bot enough information to match it to your character.",
         True,
     )
@@ -169,12 +228,12 @@ def _registration_text_nudge(profile) -> tuple[str, str, bool]:
     if profile and profile.get("albion_player_id"):
         return (
             "Restart registration",
-            "Your character lookup exists, but the screenshot step is not active anymore. Click **Register**, enter your Albion name/server, then upload the screenshot after the bot asks for it.",
+            "Your character lookup exists, but the screenshot step is not active anymore. Click **Register**, enter your Albion name, then upload the screenshot after the bot asks for it.",
             True,
         )
     return (
         "Start with the Register button",
-        "Click **Register**, enter your Albion character name and server, then upload a screenshot of your character screen in this channel when the bot asks.",
+        "Click **Register**, enter your Albion character name, then upload a screenshot of your character screen in this channel when the bot asks.",
         True,
     )
 
@@ -210,7 +269,7 @@ def _resolve_home_guild(db) -> str:
     """Return the configured in-game home guild name (auto-resolves if unset).
 
     Lightweight twin of ``applications._get_home_guild`` to avoid a circular
-    import. Falls back to the single tracked guild, then to ``HOME_GUILD_NAME``.
+    import. Falls back to the single tracked guild, then to "HomeGuild".
     """
     configured = (db.get_config("home_guild_name") or "").strip()
     if configured:
@@ -222,7 +281,7 @@ def _resolve_home_guild(db) -> str:
             return names[0]
     except Exception:
         pass
-    return HOME_GUILD_NAME
+    return "HomeGuild"
 
 
 def _resolve_home_alliance_id(db) -> str | None:
@@ -322,7 +381,7 @@ def _audit_member_roles(member, profile, role_cache, probationary_days, member_d
     is_registered = _is_registered(profile)
     unverified_role = role_cache.get("Unverified")
     verified_role   = role_cache.get("Verified")
-    tu_role         = role_cache.get(HOME_GUILD_ROLE_NAME)
+    tu_role         = role_cache.get("HomeGuild")
     synced_role     = role_cache.get("Synced")
     not_synced_role = role_cache.get("NotSynced")
 
@@ -395,35 +454,8 @@ class RegisterModal(discord.ui.Modal, title="Register Your Albion Identity"):
         max_length=32,
     )
 
-    server = discord.ui.TextInput(
-        label="Server",
-        placeholder="Americas, Europe, or Asia",
-        required=True,
-        max_length=10,
-    )
-
-    # Common short forms / aliases users might type.
-    _SERVER_ALIASES = {
-        "americas": "americas", "america": "americas", "us": "americas", "na": "americas",
-        "europe":   "europe",   "eu": "europe",
-        "asia":     "asia",     "sea": "asia",
-    }
-
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw_server = self.server.value.strip().lower()
-        server = self._SERVER_ALIASES.get(raw_server)
-
-        # Validate server input
-        if not server:
-            await interaction.response.send_message(
-                embed=error_embed(
-                    "Invalid server",
-                    f"`{raw_server or '(empty)'}` isn’t a valid server.",
-                    hint="Enter **Americas**, **Europe**, or **Asia**.",
-                ),
-                ephemeral=True,
-            )
-            return
+        server = _DEFAULT_ALBION_SERVER
 
         player_name, name_err = _validate_albion_name(self.albion_name.value)
         if name_err:
@@ -489,8 +521,8 @@ class RegisterModal(discord.ui.Modal, title="Register Your Albion Identity"):
                 await interaction.followup.send(
                     embed=error_embed(
                         "Character not found",
-                        f"`{player_name}` was not found on the **{server.capitalize()}** server.",
-                        hint="Check the spelling (capitalization matters) and try again.",
+                        f"`{player_name}` was not found on the **Americas** server.",
+                        hint="Check the spelling (capitalization matters). If your character is on another Albion server, ask an officer for help.",
                     ),
                     ephemeral=True,
                 )
@@ -689,7 +721,7 @@ class RegisterModal(discord.ui.Modal, title="Register Your Albion Identity"):
             )
             embed.add_field(name="Discord", value=interaction.user.mention, inline=True)
             embed.add_field(name="Albion Name", value=exact_name, inline=True)
-            embed.add_field(name="Server", value=server.capitalize(), inline=True)
+            embed.add_field(name="Server", value="Americas (default)", inline=True)
             embed.add_field(name="Guild", value=stats.get("guild_name") or "N/A", inline=True)
             outcome = (
                 "Recruit (home guild)"
@@ -749,6 +781,15 @@ class RegisterView(discord.ui.View):
     @discord.ui.button(label="Register · Registrarse · Cadastrar-se", style=discord.ButtonStyle.primary, custom_id="register_button")
     async def register_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(RegisterModal(self.bot))
+
+
+def _message_has_register_button(message: discord.Message) -> bool:
+    for row in message.components:
+        for component in getattr(row, "children", []):
+            if getattr(component, "custom_id", None) == "register_button":
+                return True
+    return False
+
 
 class VerificationView(discord.ui.View):
     """Persistent officer-review view for new-member registrations.
@@ -897,6 +938,16 @@ class VerificationView(discord.ui.View):
                     )
                 except Exception as exc:  # noqa: BLE001
                     error_log(f"shout-out for {applicant} failed: {exc!r}")
+                try:
+                    squad_cog = self.bot.get_cog("Squads")
+                    if squad_cog and hasattr(squad_cog, "maybe_auto_assign_recruit"):
+                        await squad_cog.maybe_auto_assign_recruit(
+                            applicant,
+                            assigned_by=str(interaction.user.id),
+                            reason="Registration approved as TU Recruit",
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    error_log(f"squad auto-assign for {applicant} failed: {exc!r}")
             elif in_home_alliance:
                 await _set_lifecycle_role("Alliance")
                 self.bot.db.set_lifecycle_role(applicant_discord_id, "Alliance")
@@ -1397,10 +1448,10 @@ async def sync_member_to_albion(bot, member: discord.Member, albion_name: str, r
             removes.append(r)
     home_guild_lc = _resolve_home_guild(bot.db).strip().lower()
     in_home_guild_now = bool(new_guild_name) and new_guild_name.strip().lower() == home_guild_lc
-    if in_home_guild_now and lifecycle not in {"Inactive", "Alumni"} and role_cache.get(HOME_GUILD_ROLE_NAME):
-        adds.append(role_cache[HOME_GUILD_ROLE_NAME])
-    elif role_cache.get(HOME_GUILD_ROLE_NAME) and role_cache[HOME_GUILD_ROLE_NAME] in member.roles:
-        removes.append(role_cache[HOME_GUILD_ROLE_NAME])
+    if in_home_guild_now and lifecycle not in {"Inactive", "Alumni"} and role_cache.get("HomeGuild"):
+        adds.append(role_cache["HomeGuild"])
+    elif role_cache.get("HomeGuild") and role_cache["HomeGuild"] in member.roles:
+        removes.append(role_cache["HomeGuild"])
 
     try:
         if removes:
@@ -1423,6 +1474,17 @@ async def sync_member_to_albion(bot, member: discord.Member, albion_name: str, r
             pass
 
     info_log(f"Synced {member} as {exact_name} → {lifecycle}.")
+    if in_home_guild_now and lifecycle == "Recruit":
+        try:
+            squad_cog = bot.get_cog("Squads")
+            if squad_cog and hasattr(squad_cog, "maybe_auto_assign_recruit"):
+                await squad_cog.maybe_auto_assign_recruit(
+                    member,
+                    assigned_by="system",
+                    reason="Albion sync confirmed TU Recruit",
+                )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"squad auto-assign during sync for {member} failed: {exc!r}")
     return True, f"Synced as **{exact_name}** ({lifecycle}, {_days_in_server(member)} day(s) in server)"
 
 
@@ -1440,6 +1502,32 @@ class Users(commands.Cog):
         except Exception:  # noqa: BLE001
             pass
 
+    async def _refresh_registration_board_message(self) -> None:
+        raw_channel_id = self.bot.db.get_config("registration_channel_id")
+        if not raw_channel_id:
+            return
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError):
+            return
+        channel = self.bot.get_channel(channel_id)
+        if not channel or not hasattr(channel, "history"):
+            return
+        bot_user = self.bot.user
+        if not bot_user:
+            return
+        try:
+            async for message in channel.history(limit=30):
+                if message.author.id != bot_user.id:
+                    continue
+                if not _message_has_register_button(message):
+                    continue
+                await message.edit(embed=build_registration_embed(), view=RegisterView(self.bot))
+                info_log(f"Refreshed registration board message {message.id} in {channel}.")
+                return
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            error_log(f"Could not refresh registration board message: {exc!r}")
+
     # On start up loop through all members in the guild and add their basic info to the database
     @commands.Cog.listener()
     async def on_ready(self):
@@ -1448,6 +1536,7 @@ class Users(commands.Cog):
         if getattr(self, "_ready_done", False):
             return
         self._ready_done = True
+        info_log("Users on_ready audit starting.")
 
         self.bot.add_view(RegisterView(self.bot))
 
@@ -1455,6 +1544,11 @@ class Users(commands.Cog):
         # and future review message because the buttons use static custom_ids
         # and look up the applicant via `verification_requests`.
         self.bot.add_view(VerificationView(self.bot))
+
+        try:
+            await asyncio.wait_for(self._refresh_registration_board_message(), timeout=8)
+        except TimeoutError:
+            error_log("Registration board refresh timed out; continuing startup audit.")
 
         probationary_days, member_days = _get_lifecycle_thresholds(self.bot.db)
 

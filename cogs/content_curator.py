@@ -21,7 +21,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from config import HOME_GUILD_ROLE_NAME
 from debug import error_log, info_log
 from utils import error_embed, info_embed, success_embed
 from cogs._lfg_config import EVENT_TYPES, EVENT_TYPES_BY_KEY
@@ -54,7 +53,6 @@ from cogs._content_config import (
     CFG_TOP_N,
     DEFAULT_QUICKVOTE_KEYS,
     QUICKVOTE_CATEGORY_KEYS,
-    availability_recommendation_keys,
     cfg_int,
     daily_timer_availability_due,
     daily_timer_slot_windows,
@@ -64,6 +62,7 @@ from cogs._content_config import (
     now_utc,
     parse_availability_slots,
     ranked_available_timer_indexes,
+    season_point_focus_recommendation_keys,
     utc_dt_for_discord,
 )
 from cogs._content_db import (
@@ -74,6 +73,7 @@ from cogs._content_db import (
     availability_slot_labels,
     fetch_availability_poll,
     fetch_daily_timer_funnel,
+    fetch_daily_timer_funnel_by_availability_poll,
     fetch_open_availability_poll,
     fetch_open_poll,
     fetch_open_quickpoll,
@@ -170,7 +170,7 @@ class ContentCurator(commands.Cog):
         try:
             db.cursor.execute(
                 "SELECT role_id FROM discord_roles WHERE name = ? LIMIT 1",
-                (HOME_GUILD_ROLE_NAME,),
+                ("HomeGuild",),
             )
             row = db.cursor.fetchone()
             if row:
@@ -188,6 +188,19 @@ class ContentCurator(commands.Cog):
         except (discord.NotFound, discord.Forbidden, ValueError):
             return None
         return ch if isinstance(ch, (discord.TextChannel, discord.Thread)) else None
+
+    def _timer_windows_for_poll(
+        self, target_date: dt.date, poll: dict,
+    ) -> dict[int, dict[str, object]]:
+        """Map availability option indexes back to generated daily timer windows."""
+        windows = daily_timer_slot_windows(target_date)
+        by_label = {str(w["label"]): w for w in windows}
+        mapped: dict[int, dict[str, object]] = {}
+        for poll_index, label in enumerate(availability_slot_labels(poll)):
+            window = by_label.get(str(label))
+            if window is not None:
+                mapped[poll_index] = window
+        return mapped
 
     async def _open_daily_timer_availability(
         self, now: dt.datetime, target_date: dt.date,
@@ -288,13 +301,18 @@ class ContentCurator(commands.Cog):
             await close_availability_poll(self.bot, poll)
 
         tallies = availability_tallies(db, int(availability_poll_id))
-        windows = daily_timer_slot_windows(target_date)
+        windows = self._timer_windows_for_poll(target_date, poll)
         min_available = cfg_int(db, CFG_DAILY_TIMER_MIN_AVAILABLE, 1)
         candidates = ranked_available_timer_indexes(
             tallies,
-            window_count=len(windows),
+            window_count=max(windows.keys(), default=-1) + 1,
             min_available=min_available,
         )
+        candidates = [
+            (headcount, slot_index)
+            for headcount, slot_index in candidates
+            if slot_index in windows
+        ]
         if not candidates:
             update_daily_timer_funnel(
                 db, int(funnel["id"]),
@@ -337,7 +355,7 @@ class ContentCurator(commands.Cog):
 
         headcount, slot_index = picked
         window = windows[slot_index]
-        option_keys = availability_recommendation_keys(headcount, limit=10)
+        option_keys = season_point_focus_recommendation_keys(db, headcount, limit=10)
         if not option_keys:
             update_daily_timer_funnel(
                 db, int(funnel["id"]),
@@ -352,7 +370,10 @@ class ContentCurator(commands.Cog):
         if ch is None:
             error_log("content-curator: daily timer channel unreachable; skipping content vote.")
             return
-        vote_duration = cfg_int(db, CFG_DAILY_TIMER_VOTE_DURATION, 60)
+        vote_duration = int(
+            funnel.get("vote_duration_min")
+            or cfg_int(db, CFG_DAILY_TIMER_VOTE_DURATION, 60)
+        )
         poll_q = await open_quickpoll(
             self.bot,
             ch,
@@ -370,7 +391,10 @@ class ContentCurator(commands.Cog):
             target_ends_at=window["ends_at"],      # type: ignore[arg-type]
             target_slot_label=str(window["slot_label"]),
             target_is_prime=True,
-            content=f"@here Vote what to run for **{window['label']}**.",
+            content=(
+                f"@here Vote what to run for **{window['label']}**.\n"
+                "Only season-point/Might-focused content is listed here."
+            ),
         )
         if not poll_q or not poll_q.get("id"):
             error_log("content-curator: daily timer content vote failed to post.")
@@ -891,10 +915,184 @@ class ContentCurator(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         result = await close_availability_poll(self.bot, poll)
+        linked = fetch_daily_timer_funnel_by_availability_poll(self.bot.db, int(poll["id"]))
+        extra = ""
+        if linked and linked.get("status") == "availability":
+            try:
+                target_date = dt.date.fromisoformat(str(linked["target_date"]))
+                await self._open_daily_timer_content_vote(target_date)
+                extra = " If this was a timer-focus poll, the content vote was opened."
+            except (TypeError, ValueError) as exc:
+                error_log(f"content-curator: bad linked timer-focus target date: {exc!r}")
         await interaction.followup.send(
             embed=success_embed(
                 "Availability poll closed",
-                f"Poll #{result['poll_id']} closed. Results were posted in the poll channel.",
+                f"Poll #{result['poll_id']} closed. Results were posted in the poll channel."
+                + extra,
+            ),
+            ephemeral=True,
+        )
+        await refresh_board_message(self.bot)
+
+    @group.command(
+        name="timer-focus-now",
+        description="Start season-focus timer planning immediately (officer).",
+    )
+    @app_commands.describe(
+        timer="Which prime timer to plan. Pick all future timers or one UTC timer.",
+        availability_minutes="How long members can mark availability. Default 20.",
+        vote_minutes="How long the content vote runs after availability closes. Default 10.",
+        channel="Override where to post. Defaults to the configured announcement channel.",
+    )
+    @app_commands.choices(timer=[
+        app_commands.Choice(name="All future prime timers", value="all"),
+        app_commands.Choice(name="UTC 18-19", value="18:00-19:00"),
+        app_commands.Choice(name="UTC 20-21", value="20:00-21:00"),
+        app_commands.Choice(name="UTC 22-23", value="22:00-23:00"),
+        app_commands.Choice(name="UTC 00-01", value="00:00-01:00"),
+        app_commands.Choice(name="UTC 02-03", value="02:00-03:00"),
+        app_commands.Choice(name="UTC 04-05", value="04:00-05:00"),
+    ])
+    async def timer_focus_now(
+        self,
+        interaction: discord.Interaction,
+        timer: str = "all",
+        availability_minutes: Optional[app_commands.Range[int, 5, 180]] = None,
+        vote_minutes: Optional[app_commands.Range[int, 1, 120]] = None,
+        channel: Optional[discord.TextChannel] = None,
+    ) -> None:
+        if not _officer_or_reject(interaction, self.bot.db):
+            await interaction.response.send_message(
+                embed=error_embed("No permission", "Officer-only command."), ephemeral=True,
+            )
+            return
+        db = self.bot.db
+        if fetch_open_availability_poll(db):
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "Availability poll already open",
+                    "Close the current one with `/content availability-close` first.",
+                ),
+                ephemeral=True,
+            )
+            return
+        if fetch_open_quickpoll(db):
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "Content vote already open",
+                    "Close the current one with `/content nextvote-close` first.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        now = utc_dt_for_discord(now_utc())
+        target_date = daily_timer_target_date(now)
+        windows = daily_timer_slot_windows(target_date)
+        chosen_timer = (timer or "all").strip()
+        future_windows: list[dict[str, object]] = []
+        for window in windows:
+            if chosen_timer != "all" and str(window["slot_label"]) != f"PRIME {chosen_timer}":
+                continue
+            starts_at = utc_dt_for_discord(window["starts_at"])  # type: ignore[arg-type]
+            if starts_at <= now:
+                continue
+            overlaps = db.fetch_overlapping_prime_events(
+                starts_at.isoformat(),
+                utc_dt_for_discord(window["ends_at"]).isoformat(),  # type: ignore[arg-type]
+            )
+            if not overlaps:
+                future_windows.append(window)
+
+        if not future_windows:
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "No open future timer",
+                    "That timer has already started, passed, or is already claimed.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        target_ch = channel or await self._daily_timer_channel()
+        if target_ch is None:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "No channel configured",
+                    "Set `content_curator_daily_timer_channel_id` or pass a channel option.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        avail_min = int(availability_minutes) if availability_minutes is not None else 20
+        vote_min = int(vote_minutes) if vote_minutes is not None else 10
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        role_id = self._configured_daily_timer_ping_role_id()
+        ping = f"<@&{role_id}> " if role_id else ""
+        timer_label = (
+            "future prime timers"
+            if chosen_timer == "all"
+            else f"UTC {chosen_timer[:2]}-{chosen_timer[6:8]}"
+        )
+        announcement = (
+            f"{ping}**Season-focus timer planning is open now.**\n"
+            f"Pick every listed timer you can realistically attend for **{timer_label}**. "
+            f"Availability closes in **{avail_min}** minutes, then the bot opens a "
+            f"**{vote_min}** minute content vote using only season-point/Might-focused options. "
+            "When the vote closes, the winner becomes an LFG."
+        )
+        poll = await open_availability_poll(
+            self.bot,
+            target_ch,
+            title=f"Daily Prime Timer Availability - {target_date:%a %b %d} UTC",
+            slots=[str(w["label"]) for w in future_windows],
+            duration_min=avail_min,
+            creator_id=str(interaction.user.id),
+            content=announcement,
+            allowed_mentions=(
+                discord.AllowedMentions(roles=[discord.Object(id=int(role_id))])
+                if role_id else discord.AllowedMentions.none()
+            ),
+        )
+        if not poll or not poll.get("message_id"):
+            await interaction.followup.send(
+                embed=error_embed("Failed", "Could not post the timer-focus availability poll."),
+                ephemeral=True,
+            )
+            return
+
+        target_key = target_date.isoformat()
+        existing = fetch_daily_timer_funnel(db, target_key)
+        funnel_id = int(existing["id"]) if existing else create_daily_timer_funnel(
+            db,
+            target_date=target_key,
+            availability_poll_id=int(poll["id"]),
+        )
+        update_daily_timer_funnel(
+            db,
+            funnel_id,
+            {
+                "availability_poll_id": int(poll["id"]),
+                "quickpoll_id": None,
+                "lfg_event_id": None,
+                "status": "availability",
+                "selected_slot_index": None,
+                "selected_slot_label": None,
+                "selected_starts_at": None,
+                "selected_ends_at": None,
+                "selected_headcount": 0,
+                "vote_duration_min": vote_min,
+                "vote_opened_at": None,
+                "closed_at": None,
+            },
+        )
+        await interaction.followup.send(
+            embed=success_embed(
+                "Timer-focus planning started",
+                f"Availability poll #{poll['id']} is live in {target_ch.mention}. "
+                f"Content vote opens automatically when it closes.",
             ),
             ephemeral=True,
         )
@@ -1080,6 +1278,16 @@ class ContentCurator(commands.Cog):
                 ):
                     info_log(f"content-curator: auto-closing availability poll #{ap['id']}.")
                     await close_availability_poll(self.bot, ap)
+                    linked = fetch_daily_timer_funnel_by_availability_poll(db, int(ap["id"]))
+                    if linked and linked.get("status") == "availability":
+                        try:
+                            target_date = dt.date.fromisoformat(str(linked["target_date"]))
+                            await self._open_daily_timer_content_vote(target_date)
+                        except (TypeError, ValueError) as exc:
+                            error_log(
+                                "content-curator: bad linked timer-focus "
+                                f"target date: {exc!r}"
+                            )
             except (TypeError, ValueError) as exc:
                 error_log(f"content-curator: bad availability closes_at: {exc!r}")
 

@@ -337,6 +337,168 @@ class Blacklist(commands.Cog):
             ephemeral=True,
         )
 
+    @blacklist_group.command(
+        name="watch-add",
+        description="Officer-only: watch an Albion character for public guild/alliance changes.",
+    )
+    @app_commands.describe(
+        albion_name="The Albion character to watch.",
+        reason="Why staff are watching this character.",
+        server="Albion server for lookup (default: Americas).",
+        evidence_note="Optional private note about evidence or who to ask.",
+    )
+    @app_commands.choices(server=[
+        app_commands.Choice(name="Americas", value="americas"),
+        app_commands.Choice(name="Europe",   value="europe"),
+        app_commands.Choice(name="Asia",     value="asia"),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def watch_add(
+        self,
+        interaction: discord.Interaction,
+        albion_name: str,
+        reason: str,
+        server: app_commands.Choice[str] | None = None,
+        evidence_note: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        srv = server.value if server else "americas"
+        loop = asyncio.get_running_loop()
+        try:
+            resolved = await loop.run_in_executor(
+                None, lambda: albion_api.get_player_id(albion_name.strip(), srv),
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"risk watch add: get_player_id failed: {exc!r}")
+            resolved = None
+        if not resolved:
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Character not found",
+                    f"`{albion_name}` was not found on **{srv.capitalize()}**.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        player_id, resolved_name = resolved
+        try:
+            raw = await loop.run_in_executor(
+                None, lambda: albion_api.get_player_stats(player_id, srv, timeout=30.0),
+            )
+            stats = albion_api.parse_stats(raw or {}) if raw else {}
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"risk watch add: get_player_stats failed: {exc!r}")
+            stats = {}
+
+        self.bot.db.add_risk_watch(
+            albion_player_id=player_id,
+            albion_name=stats.get("albion_name") or resolved_name,
+            server=srv,
+            reason=reason,
+            evidence_note=evidence_note,
+            added_by=str(interaction.user.id),
+            last_guild_id=stats.get("guild_id"),
+            last_guild_name=stats.get("guild_name"),
+            last_alliance_id=stats.get("alliance_id"),
+            last_alliance_name=stats.get("alliance_name"),
+            last_alliance_tag=stats.get("alliance_tag"),
+        )
+        guild_line = stats.get("guild_name") or "No guild currently shown"
+        alliance_line = (
+            stats.get("alliance_tag")
+            or stats.get("alliance_name")
+            or "No alliance currently shown"
+        )
+        await interaction.followup.send(
+            embed=success_embed(
+                "Risk watch added",
+                f"Watching **{stats.get('albion_name') or resolved_name}** for public guild/alliance changes.\n"
+                f"Baseline guild: **{guild_line}**\n"
+                f"Baseline alliance: **{alliance_line}**\n\n"
+                "Future changes will post privately to the officer task channel for review.",
+            ),
+            ephemeral=True,
+        )
+        info_log(
+            f"{interaction.user} added risk watch for {resolved_name} "
+            f"({player_id}); reason={reason!r}"
+        )
+
+    @blacklist_group.command(
+        name="watch-remove",
+        description="Stop watching an Albion character for guild/alliance changes.",
+    )
+    @app_commands.describe(
+        albion_name="The Albion character to stop watching.",
+        server="Albion server for lookup (default: Americas).",
+    )
+    @app_commands.choices(server=[
+        app_commands.Choice(name="Americas", value="americas"),
+        app_commands.Choice(name="Europe",   value="europe"),
+        app_commands.Choice(name="Asia",     value="asia"),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def watch_remove(
+        self,
+        interaction: discord.Interaction,
+        albion_name: str,
+        server: app_commands.Choice[str] | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        srv = server.value if server else "americas"
+        player_id: str | None = None
+        loop = asyncio.get_running_loop()
+        try:
+            resolved = await loop.run_in_executor(
+                None, lambda: albion_api.get_player_id(albion_name.strip(), srv),
+            )
+            if resolved:
+                player_id = resolved[0]
+        except Exception:  # noqa: BLE001
+            player_id = None
+        removed = self.bot.db.remove_risk_watch(
+            albion_player_id=player_id,
+            albion_name=None if player_id else albion_name,
+        )
+        if not removed:
+            await interaction.followup.send(
+                embed=info_embed("Nothing removed", f"`{albion_name}` was not on the active risk watch."),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            embed=success_embed("Risk watch removed", f"Stopped watching `{albion_name}`."),
+            ephemeral=True,
+        )
+        info_log(f"{interaction.user} removed risk watch for {albion_name}.")
+
+    @blacklist_group.command(
+        name="watch-list",
+        description="List Albion characters currently watched for guild/alliance changes.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def watch_list(self, interaction: discord.Interaction) -> None:
+        rows = self.bot.db.fetch_all_risk_watch(active_only=True)
+        if not rows:
+            await interaction.response.send_message(
+                embed=info_embed("Risk watch", "No active watched Albion characters."),
+                ephemeral=True,
+            )
+            return
+        lines: list[str] = []
+        for row in rows[:25]:
+            name = row.get("albion_name") or row.get("albion_player_id") or "Unknown"
+            guild = row.get("last_guild_name") or "No guild shown"
+            alliance = row.get("last_alliance_tag") or row.get("last_alliance_name") or "No alliance"
+            reason = row.get("reason") or "No reason provided"
+            lines.append(f"• **{name}** — {guild} / {alliance}\n  _{reason}_")
+        more = f"\n\n…and **{len(rows) - 25}** more." if len(rows) > 25 else ""
+        await interaction.response.send_message(
+            embed=info_embed(f"Risk watch — {len(rows)} active", "\n".join(lines) + more),
+            ephemeral=True,
+        )
+
 
 async def setup(bot: Bot) -> None:
     await bot.add_cog(Blacklist(bot))

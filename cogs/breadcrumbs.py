@@ -37,8 +37,9 @@ TOPICS: dict[str, BreadcrumbTopic] = {
         config_keys=("registration_channel_id",),
         summary="Link your Discord account to an Albion character.",
         detail=(
-            "Click **Register**, enter your Albion character name and server, "
+            "Click **Register**, enter your Albion character name, "
             "then upload the character-screen screenshot after the bot asks. "
+            "The bot checks the Americas server automatically. "
             "If Albion's API does not show your guild yet, staff can still "
             "review you as a Guest."
         ),

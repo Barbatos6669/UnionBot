@@ -74,4 +74,3 @@ async def moderate_text(
             if isinstance(value, (int, float))
         },
     )
-

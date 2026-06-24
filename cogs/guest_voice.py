@@ -14,7 +14,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import HOME_GUILD_ROLE_NAME
 from cogs._typing import Bot
 from debug import error_log, info_log
 from utils import error_embed, info_embed, success_embed
@@ -47,7 +46,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="guest_jtc_category_id",
         trigger_name="Join to Create - Guest",
         room_prefix="Guest Room - ",
-        allowed_roles=("Guest", "Alliance", HOME_GUILD_ROLE_NAME),
+        allowed_roles=("Guest", "Alliance", "HomeGuild"),
         legacy_trigger_config=LEGACY_GUEST_TRIGGER_ID,
         legacy_category_config=LEGACY_GUEST_CATEGORY_ID,
     ),
@@ -58,7 +57,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="alliance_jtc_category_id",
         trigger_name="Join to Create - Alliance",
         room_prefix="Alliance Room - ",
-        allowed_roles=("Alliance", HOME_GUILD_ROLE_NAME),
+        allowed_roles=("Alliance", "HomeGuild"),
     ),
     "faction": JTCProfile(
         key="faction",
@@ -67,7 +66,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="faction_jtc_category_id",
         trigger_name="Join to Create - Faction",
         room_prefix="Faction Room - ",
-        allowed_roles=("Faction Warfare", "Alliance", HOME_GUILD_ROLE_NAME),
+        allowed_roles=("Faction Warfare", "Alliance", "HomeGuild"),
         allow_everyone=True,
     ),
     "content": JTCProfile(
@@ -77,7 +76,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="content_jtc_category_id",
         trigger_name="Join to Create - Content",
         room_prefix="Content Room - ",
-        allowed_roles=(HOME_GUILD_ROLE_NAME,),
+        allowed_roles=("HomeGuild",),
     ),
     "vibe": JTCProfile(
         key="vibe",
@@ -86,7 +85,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="vibe_jtc_category_id",
         trigger_name="Join to Create - Vibe",
         room_prefix="Vibe Room - ",
-        allowed_roles=("Verified", "Guest", "Alliance", HOME_GUILD_ROLE_NAME),
+        allowed_roles=("Verified", "Guest", "Alliance", "HomeGuild"),
     ),
 }
 

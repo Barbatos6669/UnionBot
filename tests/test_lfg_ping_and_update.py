@@ -157,6 +157,30 @@ def test_event_embed_includes_minimum_ip(db):
     )
 
 
+def test_cancel_lfg_event_stores_reason_and_embed_shows_it(db):
+    event_id = _make_event(db)
+    db.cancel_lfg_event(
+        event_id,
+        reason="No healer for the group.",
+        cancelled_by="222",
+        cancelled_at="2026-06-01T19:00:00+00:00",
+    )
+
+    row = db.fetch_lfg_event(event_id)
+    assert row["status"] == "cancelled"
+    assert row["cancel_reason"] == "No healer for the group."
+    assert row["cancelled_by"] == "222"
+    assert row["cancelled_at"] == "2026-06-01T19:00:00+00:00"
+
+    embed = _format_event_embed(db, row)
+    assert any(
+        field.name == "Cancellation"
+        and "<@222>" in field.value
+        and "No healer for the group." in field.value
+        for field in embed.fields
+    )
+
+
 def test_prime_claim_fetch_excludes_cancelled_events(db):
     event_id = db.create_lfg_event(
         slot_label="PRIME 04:00-05:00",

@@ -118,9 +118,9 @@ def _crest_url(db) -> str | None:
 
 def build_member_survey_embed(db) -> discord.Embed:
     embed = discord.Embed(
-        title="📋 Optional Home-Guild Member Survey",
+        title="📋 Optional TU Member Survey",
         description=(
-            "Help leadership understand how members find home guild, what keeps people active, "
+            "Help leadership understand how members find TU, what keeps people active, "
             "what makes people drift away, and whether our Discord systems are easy to use.\n\n"
             "This is optional. Honest answers are more useful than perfect answers."
         ),
@@ -349,11 +349,11 @@ class MemberSurveyModal(discord.ui.Modal):
     def __init__(self, bot: Bot, *, anonymous: bool) -> None:
         self.bot = bot
         self.anonymous = anonymous
-        title = "Anonymous Home-Guild Survey" if anonymous else "Home-Guild Member Survey"
+        title = "Anonymous TU Survey" if anonymous else "TU Member Survey"
         super().__init__(title=title, timeout=900)
 
         self.how_joined = discord.ui.TextInput(
-            label="How did you find home guild?",
+            label="How did you find TU?",
             placeholder="Friend, guild finder, in-game recruit, Discord post... why did you join?",
             style=discord.TextStyle.paragraph,
             max_length=900,

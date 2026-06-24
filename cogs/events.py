@@ -5,7 +5,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 from debug import info_log, error_log
-from config import HOME_GUILD_ROLE_NAME, LIFECYCLE_ROLES, derive_lifecycle
+from config import LIFECYCLE_ROLES, STAFF_ROLES, derive_lifecycle
 from cogs._nickname_tags import (
     strip_managed_nickname_tag,
     tagged_nickname_for_profile,
@@ -25,6 +25,130 @@ import albion_api
 # they're promoted automatically. They will not be downgraded to Probationary.
 _AUTO_LIFECYCLE = ("Recruit", "Probationary", "Member", "Veteran", "Inactive")
 CFG_GOODBYE_CHANNEL = "goodbye_channel_id"
+CFG_LIFECYCLE_VC_INACTIVITY_DAYS = "lifecycle_vc_inactivity_days"
+CFG_LIFECYCLE_STAT_INACTIVITY_DAYS = "lifecycle_stat_inactivity_days"
+CFG_LIFECYCLE_INACTIVITY_MODE = "lifecycle_inactivity_mode"
+DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS = 7
+DEFAULT_LIFECYCLE_STAT_INACTIVITY_DAYS = 14
+DEFAULT_LIFECYCLE_INACTIVITY_MODE = "either"
+_DEFAULT_HOME_GUILD_REQUIRED_STAFF = (
+    "Commander",
+    *(role for role in STAFF_ROLES if "Shotcaller" not in role),
+)
+
+
+def _parse_lifecycle_activity_dt(value: object) -> datetime.datetime | None:
+    """Parse an activity timestamp into a naive UTC datetime.
+
+    ``last_activity_date`` is a timestamp, while ``voice_activity.date_utc`` is
+    a YYYY-MM-DD day bucket. Date-only voice buckets count through the end of
+    that UTC day so someone who joined VC today is not stale by midnight math.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10:
+            day = datetime.date.fromisoformat(raw)
+            return datetime.datetime.combine(day, datetime.time.max)
+        parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _last_voice_activity_dt(db, discord_id: str) -> datetime.datetime | None:
+    """Return the member's most recent guild voice day, if recorded."""
+    try:
+        if not db.connection:
+            db.connect()
+        db.cursor.execute(
+            """
+            SELECT MAX(date_utc) AS last_voice
+              FROM voice_activity
+             WHERE discord_id = ?
+               AND seconds > 0
+            """,
+            (str(discord_id),),
+        )
+        row = db.cursor.fetchone()
+        if not row:
+            return None
+        return _parse_lifecycle_activity_dt(row["last_voice"])
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"lifecycle voice activity lookup failed for {discord_id}: {exc!r}")
+        return None
+
+
+def _effective_lifecycle_activity_dt(db, profile: dict) -> datetime.datetime | None:
+    """Freshest activity signal used by lifecycle inactivity automation."""
+    discord_id = str(profile.get("discord_id") or "")
+    candidates = [
+        _parse_lifecycle_activity_dt(profile.get("last_activity_date")),
+        _last_voice_activity_dt(db, discord_id) if discord_id else None,
+    ]
+    candidates = [candidate for candidate in candidates if candidate is not None]
+    return max(candidates) if candidates else None
+
+
+def _get_lifecycle_int_config(db, key: str, default: int, *, minimum: int = 1, maximum: int = 365) -> int:
+    raw = db.get_config(key)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+def _idle_days(now: datetime.datetime, last_seen: datetime.datetime | None) -> int:
+    if last_seen is None:
+        return 0
+    return max(0, (now - last_seen).days)
+
+
+def _lifecycle_inactivity_state(
+    db,
+    profile: dict,
+    *,
+    baseline: datetime.datetime | None,
+    now: datetime.datetime,
+    vc_days: int,
+    stat_days: int,
+    mode: str,
+) -> tuple[bool, str]:
+    """Return whether a profile should be treated as lifecycle-inactive.
+
+    Stat movement and voice presence answer different questions:
+    - stat movement proves the Albion character is actively progressing;
+    - voice presence proves the Discord member is showing up with the guild.
+
+    Missing history starts from the member's join/verification baseline so a
+    brand-new verified player is not marked inactive immediately.
+    """
+    baseline = baseline or now
+    stat_last = _parse_lifecycle_activity_dt(profile.get("last_activity_date")) or baseline
+    voice_last = _last_voice_activity_dt(db, str(profile.get("discord_id") or "")) or baseline
+
+    stat_idle = _idle_days(now, stat_last)
+    vc_idle = _idle_days(now, voice_last)
+    stat_stale = stat_idle >= max(1, int(stat_days))
+    vc_stale = vc_idle >= max(1, int(vc_days))
+    clean_mode = (mode or DEFAULT_LIFECYCLE_INACTIVITY_MODE).strip().lower()
+    if clean_mode == "both":
+        inactive = stat_stale and vc_stale
+        joiner = " and "
+    else:
+        inactive = stat_stale or vc_stale
+        joiner = " or "
+
+    reasons: list[str] = []
+    if vc_stale:
+        reasons.append(f"no VC {vc_idle}d/{vc_days}d")
+    if stat_stale:
+        reasons.append(f"no stat movement {stat_idle}d/{stat_days}d")
+    return inactive, joiner.join(reasons)
 
 
 def _tenure_text(
@@ -196,6 +320,260 @@ class Events(commands.Cog):
         self.daily_recap.cancel()
         self.refresh_guild_scan.cancel()
 
+    async def _risk_watch_channel(self) -> discord.TextChannel | discord.Thread | None:
+        """Officer-only destination for Albion risk-watch alerts."""
+        db = self.bot.db
+        chan_id = (
+            db.get_config("risk_watch_channel_id")
+            or db.get_config("automation_officer_channel_id")
+            or db.get_config("officer_channel_id")
+        )
+        if not chan_id:
+            return None
+        try:
+            channel = self.bot.get_channel(int(chan_id)) or await self.bot.fetch_channel(int(chan_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            return None
+        return channel if isinstance(channel, (discord.TextChannel, discord.Thread)) else None
+
+    def _home_guild_required_staff_roles(self) -> tuple[str, ...]:
+        """Staff/leadership roles that require current home-guild membership.
+
+        Override with guild_config ``home_guild_required_staff_roles`` as a
+        comma-separated list. Shotcaller roles are intentionally not in the
+        default set because alliance/guest content callers may use them.
+        """
+        raw = (self.bot.db.get_config("home_guild_required_staff_roles") or "").strip()
+        if not raw:
+            return tuple(_DEFAULT_HOME_GUILD_REQUIRED_STAFF)
+        roles = tuple(
+            part.strip()
+            for part in raw.replace("|", ",").split(",")
+            if part.strip()
+        )
+        return roles or tuple(_DEFAULT_HOME_GUILD_REQUIRED_STAFF)
+
+    async def _strip_home_guild_staff_roles(
+        self,
+        discord_guild: discord.Guild,
+        member: discord.Member,
+        profile: dict,
+        *,
+        current_guild_name: str | None,
+        home_guild: str,
+    ) -> None:
+        """Remove TU-only staff positions from members no longer in TU."""
+        required_role_names = self._home_guild_required_staff_roles()
+        required_set = set(required_role_names)
+        to_remove = [
+            role for role in member.roles
+            if role.name in required_set and not role.managed
+        ]
+        removed_names: list[str] = []
+        for role in to_remove:
+            try:
+                await member.remove_roles(
+                    role,
+                    reason=(
+                        "Left home Albion guild "
+                        f"({home_guild}); current guild: {current_guild_name or 'none'}"
+                    ),
+                )
+                removed_names.append(role.name)
+            except discord.Forbidden:
+                error_log(
+                    f"Cannot remove staff role {role.name!r} from {member} "
+                    f"({member.id}); bot lacks role hierarchy/permission."
+                )
+            except discord.HTTPException as exc:
+                error_log(
+                    f"HTTP error removing staff role {role.name!r} from "
+                    f"{member} ({member.id}): {exc}"
+                )
+
+        grant_rows = 0
+        try:
+            grant_rows = self.bot.db.revoke_staff_grants(
+                str(member.id), required_role_names,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"revoke_staff_grants failed for {member.id}: {exc!r}")
+
+        if not removed_names and not grant_rows:
+            return
+
+        albion_name = profile.get("albion_name") or member.display_name
+        current = (current_guild_name or "").strip() or "No guild shown"
+        info_log(
+            f"Removed TU-only staff positions from {member} ({albion_name}) "
+            f"after guild changed to {current}: roles={removed_names}, "
+            f"grant_rows={grant_rows}."
+        )
+
+        channel = await self._risk_watch_channel()
+        if channel is None:
+            return
+        embed = discord.Embed(
+            title="🛂 Staff roles removed — left TU",
+            description=(
+                f"{member.mention} is no longer showing in **{home_guild}**, "
+                "so TU-only staff positions were removed."
+            ),
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Albion character", value=f"**{albion_name}**", inline=True)
+        embed.add_field(name="Current Albion guild", value=f"**{current}**", inline=True)
+        if removed_names:
+            embed.add_field(
+                name="Discord roles removed",
+                value=", ".join(f"`{name}`" for name in removed_names)[:1024],
+                inline=False,
+            )
+        if grant_rows:
+            embed.add_field(
+                name="Staff tenure rows cleared",
+                value=f"Removed **{grant_rows}** staff grant record(s).",
+                inline=False,
+            )
+        embed.set_footer(text=f"Discord ID: {member.id}")
+        try:
+            await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            error_log(f"staff removal officer alert failed: {exc!r}")
+
+    async def _maybe_alert_risk_watch(self, profile: dict, player_stats: dict) -> None:
+        """Alert officers when a watched Albion character changes public guild.
+
+        This is intentionally private and review-oriented. The bot does not
+        contact outside guilds or make public accusations automatically.
+        """
+        player_id = str(profile.get("albion_player_id") or "").strip()
+        if not player_id:
+            return
+        try:
+            watch = self.bot.db.fetch_risk_watch(player_id)
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"risk watch lookup failed for {player_id}: {exc!r}")
+            return
+        if not watch:
+            return
+
+        current = {
+            "albion_name": (player_stats.get("albion_name") or profile.get("albion_name") or watch.get("albion_name") or "").strip(),
+            "guild_id": (player_stats.get("guild_id") or "").strip(),
+            "guild_name": (player_stats.get("guild_name") or "").strip(),
+            "alliance_id": (player_stats.get("alliance_id") or "").strip(),
+            "alliance_name": (player_stats.get("alliance_name") or "").strip(),
+            "alliance_tag": (player_stats.get("alliance_tag") or "").strip(),
+        }
+        prior = {
+            "guild_id": (watch.get("last_guild_id") or "").strip(),
+            "guild_name": (watch.get("last_guild_name") or "").strip(),
+            "alliance_id": (watch.get("last_alliance_id") or "").strip(),
+            "alliance_name": (watch.get("last_alliance_name") or "").strip(),
+            "alliance_tag": (watch.get("last_alliance_tag") or "").strip(),
+        }
+
+        # First observation establishes a baseline. This avoids an old watch
+        # entry firing immediately on bot startup just because it has no memory.
+        if not (prior["guild_id"] or prior["guild_name"] or prior["alliance_id"] or prior["alliance_name"]):
+            self.bot.db.update_risk_watch_seen(
+                albion_player_id=player_id,
+                albion_name=current["albion_name"],
+                guild_id=current["guild_id"],
+                guild_name=current["guild_name"],
+                alliance_id=current["alliance_id"],
+                alliance_name=current["alliance_name"],
+                alliance_tag=current["alliance_tag"],
+            )
+            return
+
+        def _guild_key(prefix: dict) -> str:
+            return (prefix.get("guild_id") or prefix.get("guild_name") or "").lower()
+
+        guild_changed = _guild_key(prior) != _guild_key(current)
+        alliance_changed = (
+            (prior["alliance_id"] or prior["alliance_name"] or prior["alliance_tag"]).lower()
+            != (current["alliance_id"] or current["alliance_name"] or current["alliance_tag"]).lower()
+        )
+        if not guild_changed and not alliance_changed:
+            self.bot.db.update_risk_watch_seen(
+                albion_player_id=player_id,
+                albion_name=current["albion_name"],
+                guild_id=current["guild_id"],
+                guild_name=current["guild_name"],
+                alliance_id=current["alliance_id"],
+                alliance_name=current["alliance_name"],
+                alliance_tag=current["alliance_tag"],
+            )
+            return
+
+        def _guild_label(data: dict) -> str:
+            name = data.get("guild_name") or "No guild shown"
+            gid = data.get("guild_id") or ""
+            return f"**{name}**" + (f"\n`{gid}`" if gid else "")
+
+        def _alliance_label(data: dict) -> str:
+            tag = data.get("alliance_tag") or ""
+            name = data.get("alliance_name") or ""
+            aid = data.get("alliance_id") or ""
+            label = " / ".join(part for part in (tag, name) if part) or "No alliance shown"
+            return f"**{label}**" + (f"\n`{aid}`" if aid else "")
+
+        channel = await self._risk_watch_channel()
+        posted = False
+        if channel is not None:
+            title = "⚠️ Albion Risk Watch — guild changed" if guild_changed else "⚠️ Albion Risk Watch — alliance changed"
+            embed = discord.Embed(
+                title=title,
+                description=(
+                    f"Watched character **{current['albion_name'] or player_id}** changed public Albion affiliation.\n\n"
+                    "Review the evidence before contacting anyone outside the server."
+                ),
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Previous guild", value=_guild_label(prior), inline=True)
+            embed.add_field(name="Current guild", value=_guild_label(current), inline=True)
+            embed.add_field(name="Current alliance", value=_alliance_label(current), inline=False)
+            if watch.get("reason"):
+                embed.add_field(name="Watch reason", value=str(watch["reason"])[:1024], inline=False)
+            if watch.get("evidence_note"):
+                embed.add_field(name="Evidence note", value=str(watch["evidence_note"])[:1024], inline=False)
+            embed.add_field(
+                name="Suggested next step",
+                value=(
+                    "Confirm the player identity and evidence. If leadership chooses to warn the new guild, "
+                    "keep it factual: what happened, what proof exists, and who they can contact."
+                ),
+                inline=False,
+            )
+            embed.set_footer(text=f"Albion player ID: {player_id}")
+            try:
+                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                posted = True
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                error_log(f"risk watch alert failed for {player_id}: {exc!r}")
+
+        self.bot.db.update_risk_watch_seen(
+            albion_player_id=player_id,
+            albion_name=current["albion_name"],
+            guild_id=current["guild_id"],
+            guild_name=current["guild_name"],
+            alliance_id=current["alliance_id"],
+            alliance_name=current["alliance_name"],
+            alliance_tag=current["alliance_tag"],
+            alerted=posted,
+        )
+        info_log(
+            f"Risk watch change for {current['albion_name'] or player_id}: "
+            f"{prior.get('guild_name') or 'none'} -> {current.get('guild_name') or 'none'}"
+        )
+
     @commands.Cog.listener()
     async def on_ready(self):
         # Run-once-per-process: do an initial Discord inventory sync so other
@@ -209,7 +587,7 @@ class Events(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
         """When a member leaves the Discord server, wipe their Albion link
-        and any home-guild history flag so they no longer appear on leaderboards or
+        and any TU history flag so they no longer appear on leaderboards or
         guild-history reports. Keeps their lifetime stats out of stale
         rankings. Re-registering after rejoining is intentional and required.
         """
@@ -235,7 +613,7 @@ class Events(commands.Cog):
                 return
             had_albion = bool(profile.get("albion_player_id"))
             db.clear_user_albion_info(str(member.id))
-            # Also drop the home-guild history flag — they're gone from Discord, so
+            # Also drop the TU history flag — they're gone from Discord, so
             # if they ever come back they should re-prove guild membership.
             try:
                 db.set_was_in_home_guild(str(member.id), False)
@@ -824,6 +1202,14 @@ class Events(commands.Cog):
                         f"{profile.get('albion_name')!r} (API returned empty)."
                     )
 
+                try:
+                    await self._maybe_alert_risk_watch(profile, player_stats)
+                except Exception as exc:  # noqa: BLE001
+                    error_log(
+                        f"risk watch check failed for "
+                        f"{profile.get('albion_name') or profile.get('discord_id')}: {exc!r}"
+                    )
+
                 self.bot.db.update_user_albion_info(
                     profile["discord_id"], profile["albion_player_id"],
                     player_stats.get("albion_name") or profile["albion_name"], player_stats
@@ -890,7 +1276,7 @@ class Events(commands.Cog):
                         profile[k] = player_stats[k]
             else:
                 # API failed — reconcile against the *stored* DB state so stale
-                # nickname tags / home-guild role / Alumni demotions still get applied.
+                # nickname tags / TU role / Alumni demotions still get applied.
                 new_guild_name = old_guild_name
                 new_albion_name = old_albion_name
 
@@ -936,10 +1322,52 @@ class Events(commands.Cog):
         # Refresh the staff application board (slot counts / open vs full)
         await refresh_staff_board(self.bot)
 
+    async def _send_inactive_status_dm(
+        self,
+        member: discord.Member,
+        *,
+        reason: str,
+        vc_days: int,
+        stat_days: int,
+    ) -> None:
+        reason_line = reason or "recent activity was below the guild's active-member threshold"
+        try:
+            await member.send(
+                "Hey, this is an automated Home Guild activity notice.\n\n"
+                "You were moved to **Inactive** because the bot did not see enough "
+                "recent guild activity from you.\n"
+                f"Reason: **{reason_line}**.\n\n"
+                "Inactive keeps you registered, but lowers your Discord visibility "
+                "closer to Guest-level access until you are active again.\n\n"
+                "How to recover:\n"
+                f"• Join guild voice/content again. The VC threshold is **{vc_days} day(s)**.\n"
+                f"• Get Albion stat movement again if your stats are stale. The stat threshold is **{stat_days} day(s)**.\n"
+                "• After the next bot sync, your active guild status can be restored automatically.\n\n"
+                "If you think this was a mistake, message an officer and they can recheck you."
+            )
+            info_log(f"Sent Inactive status DM to {member} ({member.id}).")
+        except discord.Forbidden:
+            info_log(f"Could not DM Inactive status notice to {member} ({member.id}); DMs likely closed.")
+        except discord.HTTPException as exc:
+            error_log(f"Inactive status DM failed for {member} ({member.id}): {exc!r}")
+
     async def _auto_promote_lifecycle(self) -> int:
         """Run the time-in-server based lifecycle progression. Returns # changes applied."""
         now = datetime.datetime.utcnow()
-        inactivity_days   = int(self.bot.db.get_config("inactivity_days")   or 7)
+        vc_inactivity_days = _get_lifecycle_int_config(
+            self.bot.db,
+            CFG_LIFECYCLE_VC_INACTIVITY_DAYS,
+            DEFAULT_LIFECYCLE_VC_INACTIVITY_DAYS,
+        )
+        stat_inactivity_days = _get_lifecycle_int_config(
+            self.bot.db,
+            CFG_LIFECYCLE_STAT_INACTIVITY_DAYS,
+            DEFAULT_LIFECYCLE_STAT_INACTIVITY_DAYS,
+        )
+        inactivity_mode = (
+            self.bot.db.get_config(CFG_LIFECYCLE_INACTIVITY_MODE)
+            or DEFAULT_LIFECYCLE_INACTIVITY_MODE
+        )
         probationary_days = int(self.bot.db.get_config("probationary_days") or 30)
         member_days       = int(self.bot.db.get_config("member_days")       or 90)
         changed = 0
@@ -962,12 +1390,16 @@ class Events(commands.Cog):
             else:
                 since_iso = profile.get("verified_date")
 
-            last_active_str = profile.get("last_activity_date")
-            if last_active_str:
-                last_active = datetime.datetime.fromisoformat(last_active_str)
-                inactive = (now - last_active).days >= inactivity_days
-            else:
-                inactive = False
+            baseline = _parse_lifecycle_activity_dt(since_iso)
+            inactive, inactive_reason = _lifecycle_inactivity_state(
+                self.bot.db,
+                profile,
+                baseline=baseline,
+                now=now,
+                vc_days=vc_inactivity_days,
+                stat_days=stat_inactivity_days,
+                mode=inactivity_mode,
+            )
 
             # Members on an active Leave of Absence are never auto-demoted
             # to Inactive. Their LOA naturally expires by date.
@@ -996,12 +1428,16 @@ class Events(commands.Cog):
                     continue
                 old_role = discord.utils.get(discord_guild.roles, name=current_role)
                 new_role = discord.utils.get(discord_guild.roles, name=target_role)
-                tu_role = discord.utils.get(discord_guild.roles, name=HOME_GUILD_ROLE_NAME)
+                tu_role = discord.utils.get(discord_guild.roles, name="HomeGuild")
+                home_guild = (self.bot.db.get_config("home_guild_name") or "HomeGuild").strip()
+                in_home_guild = (profile.get("guild_name") or "").strip().lower() == home_guild.lower()
                 try:
                     if old_role and old_role in member.roles:
                         await member.remove_roles(old_role)
                     if target_role in {"Inactive", "Alumni"} and tu_role and tu_role in member.roles:
                         await member.remove_roles(tu_role, reason=f"Lifecycle -> {target_role}")
+                    elif in_home_guild and tu_role and tu_role not in member.roles:
+                        await member.add_roles(tu_role, reason=f"Lifecycle -> {target_role}")
                     if new_role:
                         await member.add_roles(new_role)
                 except discord.Forbidden:
@@ -1019,7 +1455,15 @@ class Events(commands.Cog):
                 # admin fixes role hierarchy.
                 continue
             self.bot.db.set_lifecycle_role(profile["discord_id"], target_role)
-            info_log(f"Lifecycle update for {profile['discord_id']}: {current_role} -> {target_role}")
+            suffix = f" ({inactive_reason})" if target_role == "Inactive" and inactive_reason else ""
+            info_log(f"Lifecycle update for {profile['discord_id']}: {current_role} -> {target_role}{suffix}")
+            if target_role == "Inactive" and current_role != "Inactive":
+                await self._send_inactive_status_dm(
+                    discord_member,
+                    reason=inactive_reason,
+                    vc_days=vc_inactivity_days,
+                    stat_days=stat_inactivity_days,
+                )
             changed += 1
         return changed
 
@@ -1034,7 +1478,7 @@ class Events(commands.Cog):
     # happens to have a role with one of these names.
     _PROTECTED_ROLE_NAMES = frozenset({
         "Verified", "Unverified", "Synced", "NotSynced",
-        HOME_GUILD_ROLE_NAME, "Guild Leader",
+        "HomeGuild", "Guild Leader",
         "Recruit", "Probationary", "Member", "Veteran", "Inactive", "Alumni", "Alliance", "Guest",
         "Captain", "Officer", "Steward", "Senior Shotcaller", "Shotcaller", "Recruiter",
         "@everyone",
@@ -1115,7 +1559,7 @@ class Events(commands.Cog):
         """Ensure ``member`` has a Discord role matching their in-game guild
         (auto-creating it if needed) and strip any other auto-created guild
         roles. No-op when the member is in the home guild — that's covered by
-        the dedicated home-guild role.
+        the dedicated HomeGuild role.
         """
         gname = (current_guild_name or "").strip()
         in_home = gname and gname.lower() == home_guild.lower()
@@ -1242,7 +1686,7 @@ class Events(commands.Cog):
 
     async def _reconcile_member_state(self, profile: dict, current_guild_name: str | None,
                                       current_albion_name: str | None) -> None:
-        """Sync home-guild role, alliance nickname tag, Guild Leader role, and Alumni demotion for one profile.
+        """Sync TU role, alliance nickname tag, Guild Leader role, and Alumni demotion for one profile.
 
         Runs every sync cycle (even on API failure, using stored DB state) so stale tags
         get cleaned up promptly.
@@ -1275,8 +1719,8 @@ class Events(commands.Cog):
                     except (discord.Forbidden, discord.HTTPException):
                         pass
 
-            # Home-guild role.
-            tu_role = discord.utils.get(discord_guild.roles, name=HOME_GUILD_ROLE_NAME)
+            # HomeGuild role.
+            tu_role = discord.utils.get(discord_guild.roles, name="HomeGuild")
             if tu_role:
                 try:
                     dormant_lifecycle = current_lifecycle in {"Inactive", "Alumni"}
@@ -1289,15 +1733,15 @@ class Events(commands.Cog):
 
             # Per-guild role: auto-create a Discord role matching the in-game
             # guild name and assign it to the member (only for non-home guilds —
-            # the home guild has its own dedicated role).
+            # the home guild has its own dedicated HomeGuild role).
             await self._sync_external_guild_role(
                 discord_guild, member, current_guild_name, home_guild
             )
             await self._hydrate_profile_alliance_from_guild(profile)
 
             # Nickname:
-            #   in home guild          -> [HG] <name> by default
-            #   in home alliance       -> [ALLY] <name> / alliance tag
+            #   in home guild          -> [TU] <name> by default
+            #   in home alliance       -> [UOT] <name> / alliance tag
             #   in another alliance    -> [<alliance_tag>] <name>
             #   otherwise              -> <name>
             if current_albion_name:
@@ -1323,7 +1767,7 @@ class Events(commands.Cog):
             #
             # `was_in_home_guild` is a sticky flag persisted on the profile.
             # Legacy profiles without the flag are backfilled here: anyone whose
-            # current lifecycle is a home-guild-earned role (or Alumni) clearly used to
+            # current lifecycle is a TU-earned role (or Alumni) clearly used to
             # be in the guild.
             db_was_in_home = bool(profile.get("was_in_home_guild"))
             if not db_was_in_home and (
@@ -1392,6 +1836,14 @@ class Events(commands.Cog):
                         error_log(f"shout-out for {member} failed: {exc!r}")
 
             if not in_home_guild and not is_founder:
+                await self._strip_home_guild_staff_roles(
+                    discord_guild,
+                    member,
+                    profile,
+                    current_guild_name=current_guild_name,
+                    home_guild=home_guild,
+                )
+
                 # Decide between Alumni / Alliance / Guest.
                 # was_in_home_guild always wins → Alumni (sticky history flag).
                 # Otherwise: alliance match → Alliance, no match → Guest.
@@ -1502,14 +1954,14 @@ class Events(commands.Cog):
                         )
 
     async def _sweep_orphan_nickname_tags(self, already_reconciled: set[str]) -> None:
-        """Strip leftover managed nickname tags / home-guild role from unregistered members.
+        """Strip leftover managed nickname tags / TU role from unregistered members.
 
         Catches members who:
-          * have no registered profile but somehow got a managed nickname tag or home-guild role,
+          * have no registered profile but somehow got a managed nickname tag or TU role,
           * had their profile cleared but kept the visual artifacts.
         """
         for discord_guild in self.bot.guilds:
-            tu_role = discord.utils.get(discord_guild.roles, name=HOME_GUILD_ROLE_NAME)
+            tu_role = discord.utils.get(discord_guild.roles, name="HomeGuild")
             leader_role = discord.utils.get(discord_guild.roles, name="Guild Leader")
             for member in discord_guild.members:
                 if member.bot or str(member.id) in already_reconciled:
@@ -1869,7 +2321,7 @@ class Events(commands.Cog):
             embed = discord.Embed(
                 title="\ud83d\udcc5 Weekly Recap",
                 description=(
-                    f"The past 7 days in {HOME_GUILD_ROLE_NAME} \u2014 "
+                    f"The past 7 days in HomeGuild \u2014 "
                     f"<t:{int(since.timestamp())}:D> \u2192 <t:{int(now.timestamp())}:D>"
                 ),
                 color=color,
@@ -1889,10 +2341,10 @@ class Events(commands.Cog):
             else:
                 embed.set_footer(text=f"{footer_name} \u00b7 Weekly Recap")
 
-            # Ping the home-guild role if it exists in the guild so all
+            # Ping the HomeGuild role if it exists in the guild so all
             # members see the recap in their notification feed.
             tu_role = (
-                discord.utils.get(guild.roles, name=HOME_GUILD_ROLE_NAME) if guild is not None else None
+                discord.utils.get(guild.roles, name="HomeGuild") if guild is not None else None
             )
             content = tu_role.mention if tu_role is not None else None
             allowed = discord.AllowedMentions(
@@ -2017,7 +2469,7 @@ class Events(commands.Cog):
             embed = discord.Embed(
                 title="\ud83c\udf05 Daily Recap",
                 description=(
-                    f"The past 24 hours in {HOME_GUILD_ROLE_NAME} \u2014 "
+                    f"The past 24 hours in HomeGuild \u2014 "
                     f"<t:{int(since.timestamp())}:f> \u2192 <t:{int(now.timestamp())}:f>"
                 ),
                 color=color,
@@ -2037,7 +2489,7 @@ class Events(commands.Cog):
                 embed.set_footer(text=f"{footer_name} \u00b7 Daily Recap")
 
             tu_role = (
-                discord.utils.get(guild.roles, name=HOME_GUILD_ROLE_NAME) if guild is not None else None
+                discord.utils.get(guild.roles, name="HomeGuild") if guild is not None else None
             )
             content = tu_role.mention if tu_role is not None else None
             allowed = discord.AllowedMentions(

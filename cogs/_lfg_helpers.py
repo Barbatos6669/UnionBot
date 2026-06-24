@@ -625,6 +625,70 @@ def _emoji_for_role(role: str | None) -> str:
     return _ROLE_EMOJI.get(role.strip().lower(), "⚔️")
 
 
+def _split_text_for_embed_fields(text: str, *, limit: int = 1024) -> list[str]:
+    """Split text into Discord field-sized chunks without dropping content."""
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+
+    chunks: list[str] = []
+    buf: list[str] = []
+    used = 0
+    for line in raw.splitlines():
+        pieces = [line[i:i + limit] for i in range(0, len(line), limit)] or [""]
+        for piece in pieces:
+            add = len(piece) + (1 if buf else 0)
+            if buf and used + add > limit:
+                chunks.append("\n".join(buf))
+                buf = [piece]
+                used = len(piece)
+            else:
+                buf.append(piece)
+                used += add
+    if buf:
+        chunks.append("\n".join(buf))
+    return chunks
+
+
+def _split_blocks_for_embed_fields(blocks: list[str], *, limit: int = 1024) -> list[str]:
+    """Pack whole role blocks into Discord fields when possible."""
+    chunks: list[str] = []
+    current = ""
+    for block in (b.strip() for b in blocks if str(b or "").strip()):
+        if len(block) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_text_for_embed_fields(block, limit=limit))
+            continue
+
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(current)
+        current = block
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _add_split_field(
+    embed: discord.Embed,
+    *,
+    name: str,
+    value: str,
+    inline: bool = False,
+) -> None:
+    """Add one logical field as multiple Discord fields if needed."""
+    chunks = _split_text_for_embed_fields(value)
+    for idx, chunk in enumerate(chunks, start=1):
+        suffix = "" if len(chunks) == 1 else f" ({idx}/{len(chunks)})"
+        embed.add_field(name=f"{name}{suffix}"[:256], value=chunk, inline=inline)
+
+
 def _format_build_briefing(
     db, event: dict, slot: dict,
 ) -> discord.Embed:
@@ -669,17 +733,19 @@ def _format_build_briefing(
     e.add_field(name="🧪 Consumables & IP", value="\n".join(consum_lines), inline=True)
     # Approved swaps — gear alternates that still fulfil the role.
     if slot.get("swaps"):
-        e.add_field(
+        _add_split_field(
+            e,
             name="🔁 Approved swaps",
-            value=str(slot["swaps"])[:1024],
+            value=str(slot["swaps"]),
             inline=False,
         )
     # Job description: slot.notes is the per-role instructions; comp.description
     # is the overall battle plan / strategy.
     if slot.get("notes"):
-        e.add_field(
+        _add_split_field(
+            e,
             name="📋 Your job",
-            value=str(slot["notes"])[:1024],
+            value=str(slot["notes"]),
             inline=False,
         )
     comp_id = event.get("comp_id")
@@ -689,9 +755,10 @@ def _format_build_briefing(
         except Exception:  # noqa: BLE001
             comp = {}
         if comp.get("description"):
-            e.add_field(
+            _add_split_field(
+                e,
                 name=f"🎯 Strategy — {comp.get('name') or 'comp'}",
-                value=str(comp["description"])[:1024],
+                value=str(comp["description"]),
                 inline=False,
             )
     e.set_footer(text=f"Slot #{slot.get('slot_id', '?')} · Event #{event['id']}")
@@ -748,7 +815,12 @@ def _format_event_embed(db, event: dict) -> discord.Embed:
     if ip_req:
         e.add_field(name="Minimum IP", value=ip_req, inline=True)
     if event.get("comp_notes"):
-        e.add_field(name="Comp / requirements", value=event["comp_notes"], inline=False)
+        _add_split_field(
+            e,
+            name="Comp / requirements",
+            value=str(event["comp_notes"]),
+            inline=False,
+        )
     if event.get("discussion_thread_id"):
         e.add_field(
             name="Discussion",
@@ -760,6 +832,15 @@ def _format_event_embed(db, event: dict) -> discord.Embed:
             name="Voice",
             value=f"<#{event['voice_channel_id']}>",
             inline=True,
+        )
+    if str(event.get("status") or "").lower() == "cancelled":
+        reason = " ".join(str(event.get("cancel_reason") or "No reason recorded.").split())
+        cancelled_by = str(event.get("cancelled_by") or "").strip()
+        actor = f"<@{cancelled_by}>" if cancelled_by.isdigit() else "Unknown"
+        e.add_field(
+            name="Cancellation",
+            value=f"By: {actor}\nReason: {reason[:900]}",
+            inline=False,
         )
 
     # ── Comp slot grid (when a comp is attached) ─────────────────────────
@@ -780,7 +861,7 @@ def _format_event_embed(db, event: dict) -> discord.Embed:
                   if str(s.get("discord_id")) not in claimed_ids]
 
     if grid:
-        # Group by role to keep the field readable; cap at ~1000 chars.
+        # Group by role and split across fields so large comps stay complete.
         from collections import defaultdict
         by_role: dict[str, list[str]] = defaultdict(list)
         filled = 0
@@ -795,23 +876,26 @@ def _format_event_embed(db, event: dict) -> discord.Embed:
                 line = f"• {weapon} — _open_"
             by_role[r.get("role") or "Other"].append(line)
 
-        chunks: list[str] = []
+        role_blocks: list[str] = []
         for role, lines in by_role.items():
             emoji = _emoji_for_role(role)
-            chunks.append(f"**{emoji} {role}** ({len(lines)})")
-            chunks.extend(lines)
-            chunks.append("")
-        body = "\n".join(chunks).rstrip()
-        if len(body) > 1000:
-            body = body[:980].rsplit("\n", 1)[0] + "\n…(truncated)"
-        e.add_field(
-            name=(
-                f"🧩 Build assignments — {comp_name or 'comp'}  "
-                f"({filled}/{total} filled)"
-            ),
-            value=body or "_No slots in this comp._",
-            inline=False,
+            role_blocks.append(
+                "\n".join([f"**{emoji} {role}** ({len(lines)})", *lines])
+            )
+        field_chunks = (
+            _split_blocks_for_embed_fields(role_blocks)
+            or ["_No slots in this comp._"]
         )
+        for idx, chunk in enumerate(field_chunks, start=1):
+            suffix = "" if len(field_chunks) == 1 else f" ({idx}/{len(field_chunks)})"
+            e.add_field(
+                name=(
+                    f"🧩 Build assignments — {comp_name or 'comp'} "
+                    f"({filled}/{total} filled){suffix}"
+                )[:256],
+                value=chunk,
+                inline=False,
+            )
 
     # Roster (people without a specific build claim, or everyone if no comp).
     list_to_show = unassigned if grid else signups

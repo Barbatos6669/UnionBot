@@ -1065,6 +1065,102 @@ class RescheduleEventModal(discord.ui.Modal, title="Reschedule event"):
         )
 
 
+class CancelEventModal(discord.ui.Modal):
+    """Require a reason before an LFG event can be cancelled."""
+
+    def __init__(self, event: dict, parent_view: "EventSignupView") -> None:
+        super().__init__(title="Cancel LFG Event")
+        self.event_id = int(event["id"])
+        self.parent_view = parent_view
+        self.reason_input = discord.ui.TextInput(
+            label="Cancellation reason",
+            placeholder="e.g. Not enough signups, no healer, rescheduling, real-life issue...",
+            style=discord.TextStyle.paragraph,
+            min_length=5,
+            max_length=500,
+            required=True,
+        )
+        self.add_item(self.reason_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        db = interaction.client.db
+        event = db.fetch_lfg_event(self.event_id)
+        if not event:
+            await interaction.response.send_message(
+                embed=error_embed("Event missing", "That event no longer exists."),
+                ephemeral=True,
+            )
+            return
+        if str(event.get("status") or "open").lower() != "open":
+            await interaction.response.send_message(
+                embed=error_embed("Event closed", "This event is already closed."),
+                ephemeral=True,
+            )
+            return
+        if not _can_manage_lfg_event(interaction.user, event):
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Not allowed",
+                    "Only the event creator or an Officer can cancel this event.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        reason = re.sub(r"\s+", " ", str(self.reason_input.value or "")).strip()
+        if len(reason) < 5:
+            await interaction.response.send_message(
+                embed=error_embed("Reason required", "Please give a clear reason before cancelling."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        cancelled_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
+        db.cancel_lfg_event(
+            self.event_id,
+            reason=reason,
+            cancelled_by=str(interaction.user.id),
+            cancelled_at=cancelled_at,
+        )
+        updated_event = db.fetch_lfg_event(self.event_id) or event
+        await self.parent_view._refresh_message(interaction)
+        await _refresh_prime_claim_dashboards(interaction.client, updated_event, "cancel")
+
+        # Also cancel the linked Discord scheduled event, if any.
+        sched_id = event.get("scheduled_event_id")
+        if sched_id and interaction.guild is not None:
+            try:
+                sched = interaction.guild.get_scheduled_event(int(sched_id)) \
+                    or await interaction.guild.fetch_scheduled_event(int(sched_id))
+                if sched is not None:
+                    await sched.cancel(
+                        reason=f"LFG #{self.event_id} cancelled by {interaction.user}: {reason[:220]}"
+                    )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError) as exc:
+                warning_log(
+                    f"cancel scheduled event for LFG #{self.event_id} failed: {exc!r}"
+                )
+            db.set_lfg_scheduled_event_id(self.event_id, None)
+
+        cleanup = getattr(interaction.client.get_cog("LFG"), "cleanup_lfg_event_surfaces", None)
+        if callable(cleanup):
+            await cleanup(self.event_id, reason=f"manual event cancel: {reason[:120]}")
+
+        await interaction.followup.send(
+            embed=info_embed(
+                "Event cancelled",
+                f"#{self.event_id} **{event['title']}** is cancelled.\n\n"
+                f"**Reason:** {reason}",
+            ),
+            ephemeral=True,
+        )
+        info_log(
+            f"{interaction.user} cancelled LFG #{self.event_id} "
+            f"({event.get('title')!r}) reason={reason!r}"
+        )
+
+
 class EventSignupView(discord.ui.View):
     """Persistent view attached to each posted event message.
 
@@ -1093,7 +1189,16 @@ class EventSignupView(discord.ui.View):
         if not event:
             return
         try:
-            await interaction.message.edit(
+            message = getattr(interaction, "message", None)
+            if message is None and event.get("channel_id") and event.get("message_id"):
+                channel = interaction.client.get_channel(int(event["channel_id"]))
+                if channel is None:
+                    channel = await interaction.client.fetch_channel(int(event["channel_id"]))
+                if hasattr(channel, "fetch_message"):
+                    message = await channel.fetch_message(int(event["message_id"]))
+            if message is None:
+                return
+            await message.edit(
                 embed=_format_event_embed(db, event),
                 view=None if event["status"] != "open" else self,
             )
@@ -1421,48 +1526,19 @@ class EventSignupView(discord.ui.View):
         event = db.fetch_lfg_event(self.event_id)
         if not event:
             return
-        is_creator = str(interaction.user.id) == event["creator_id"]
-        # Only Officer+ can cancel another user's event. Shotcallers can
-        # create prime slots but cannot override someone else's cancellation.
-        is_staff = False
-        if isinstance(interaction.user, discord.Member):
-            is_staff = any(
-                r.name in CANCEL_OVERRIDE_ROLES for r in interaction.user.roles
+        if str(event.get("status") or "open").lower() != "open":
+            await interaction.response.send_message(
+                embed=error_embed("Event closed", "This event is already closed."),
+                ephemeral=True,
             )
-        if not (is_creator or is_staff):
+            return
+        if not _can_manage_lfg_event(interaction.user, event):
             await interaction.response.send_message(
                 embed=error_embed("Not allowed", "Only the event creator or an Officer can cancel this event."),
                 ephemeral=True,
             )
             return
-
-        await interaction.response.defer(ephemeral=True)
-        db.cancel_lfg_event(self.event_id)
-        await self._refresh_message(interaction)
-        await _refresh_prime_claim_dashboards(interaction.client, event, "cancel")
-
-        # Also cancel the linked Discord scheduled event, if any.
-        sched_id = event.get("scheduled_event_id")
-        if sched_id and interaction.guild is not None:
-            try:
-                sched = interaction.guild.get_scheduled_event(int(sched_id)) \
-                    or await interaction.guild.fetch_scheduled_event(int(sched_id))
-                if sched is not None:
-                    await sched.cancel(reason=f"LFG #{self.event_id} cancelled")
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError) as exc:
-                warning_log(
-                    f"cancel scheduled event for LFG #{self.event_id} failed: {exc!r}"
-                )
-            db.set_lfg_scheduled_event_id(self.event_id, None)
-
-        cleanup = getattr(interaction.client.get_cog("LFG"), "cleanup_lfg_event_surfaces", None)
-        if callable(cleanup):
-            await cleanup(self.event_id, reason="manual event cancel")
-
-        await interaction.followup.send(
-            embed=info_embed("Event cancelled", f"#{self.event_id} **{event['title']}** is cancelled."),
-            ephemeral=True,
-        )
+        await interaction.response.send_modal(CancelEventModal(event, self))
 
 
 # ── Control-panel view (the message in the events board) ────────────────────

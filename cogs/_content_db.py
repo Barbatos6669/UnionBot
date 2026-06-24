@@ -145,10 +145,15 @@ def ensure_schema(db) -> None:
             selected_ends_at     TEXT,
             selected_headcount   INTEGER NOT NULL DEFAULT 0,
             created_at           TEXT NOT NULL,
+            vote_duration_min    INTEGER,
             vote_opened_at       TEXT,
             closed_at            TEXT
         )
     """)
+    try:
+        cur.execute("ALTER TABLE content_daily_timer_funnels ADD COLUMN vote_duration_min INTEGER")
+    except sqlite3.OperationalError:
+        pass
     db.connection.commit()
     info_log("Initialized content_curator tables.")
 
@@ -393,6 +398,17 @@ def fetch_daily_timer_funnel_by_quickpoll(db, quickpoll_id: int) -> Optional[dic
     return dict(row) if row else None
 
 
+def fetch_daily_timer_funnel_by_availability_poll(
+    db, availability_poll_id: int,
+) -> Optional[dict]:
+    db.cursor.execute(
+        "SELECT * FROM content_daily_timer_funnels WHERE availability_poll_id = ?",
+        (int(availability_poll_id),),
+    )
+    row = db.cursor.fetchone()
+    return dict(row) if row else None
+
+
 def create_daily_timer_funnel(
     db, *, target_date: str, availability_poll_id: int,
 ) -> int:
@@ -413,6 +429,7 @@ def update_daily_timer_funnel(db, funnel_id: int, fields: dict) -> bool:
         "availability_poll_id", "quickpoll_id", "lfg_event_id", "status",
         "selected_slot_index", "selected_slot_label", "selected_starts_at",
         "selected_ends_at", "selected_headcount", "vote_opened_at", "closed_at",
+        "vote_duration_min",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
     if not clean:

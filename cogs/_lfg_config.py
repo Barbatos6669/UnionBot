@@ -16,8 +16,6 @@ from dataclasses import dataclass
 
 import discord
 
-from config import HOME_GUILD_ROLE_NAME
-
 
 # ── Prime-time slots ────────────────────────────────────────────────────────
 # Emoji colors mirror the in-game Albion prime-time palette. Edit the
@@ -242,6 +240,8 @@ STAFF_PERMISSION_SCHEME: dict[str, tuple[str, ...]] = {
         "mention_everyone",
         "manage_messages", "manage_threads", "manage_events",
     ),
+    # Squad Leader is an onboarding-duty badge, not a moderation power role.
+    "Squad Leader": (),
     # Officer — adds kick + timeout + audit visibility.
     "Officer": (
         "create_instant_invite",
@@ -294,7 +294,7 @@ DESIRED_LAYOUT: list[tuple[str, list[tuple[str, str]]]] = [
         ("🎭-content-roles", "text"),
         ("🗳️-votes", "text"),
     ]),
-    ("🌐 ALLY Alliance", [
+    ("🌐 UOT Alliance", [
         ("ℹ️-alliance-info", "text"),
         ("📢-alliance-announcements", "text"),
         ("📅-alliance-events", "text"),
@@ -506,10 +506,10 @@ CHANNEL_INTROS: dict[str, str] = {
     "💰-bounty-board": "**Bounty board.** Guild-funded targets, shopping requests, and active reward contracts.",
     "🪲-bugs": "**Bot and server bug reports.** Include what happened, where, and a screenshot when possible.",
     "🔥-member-suggestions": "**Member suggestions.** Ideas for guild systems, Discord cleanup, events, and bot improvements.",
-    "ℹ️-alliance-info": "**ALLY alliance information.** Requirements, expectations, contacts, and current direction.",
-    "📢-alliance-announcements": "**Alliance announcements.** Important ALLY-wide updates and leadership notices.",
+    "ℹ️-alliance-info": "**UOT alliance information.** Requirements, expectations, contacts, and current direction.",
+    "📢-alliance-announcements": "**Alliance announcements.** Important UOT-wide updates and leadership notices.",
     "📅-alliance-events": "**Alliance events.** Cross-guild content planning and event posts.",
-    "💬-alliance-chat": "**Alliance chat.** Day-to-day ALLY coordination and discussion.",
+    "💬-alliance-chat": "**Alliance chat.** Day-to-day UOT coordination and discussion.",
     "👑-guild-leaders": "**Guild leader coordination.** Alliance leadership planning and escalations.",
     "ℹ️-martlock-info": "**Martlock faction information.** How we organize Martlock faction content from this server.",
     "🔎-martlock-lfg": "**Martlock faction LFG.** Faction Warfare events and signups post here.",
@@ -568,7 +568,7 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
     "📌 Union Board": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages"), ()),
         ("Commander", ("read_messages", "send_messages"), ()),
         ("Guild Leader", ("read_messages", "send_messages"), ()),
@@ -576,16 +576,16 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
     "📌 Important": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages"), ()),
         ("Commander", ("read_messages", "send_messages"), ()),
         ("Guild Leader", ("read_messages", "send_messages"), ()),
     ],
-    "🌐 ALLY Alliance": [
+    "🌐 UOT Alliance": [
         ("@everyone", (), ("read_messages", "connect")),
         *_deny_channel_access(("Guest", "Inactive", "Alumni")),
         ("Alliance", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
         ("Ambassador", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
         ("Officer", ("manage_messages",), ()),
     ],
@@ -596,61 +596,61 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
     "⚔️ Content Ops": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Shotcaller", ("mention_everyone",), ()),
         ("Officer", ("manage_messages",), ()),
     ],
     "Union Hall": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
     "💬 General": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
     "📣 Content Chat": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
     "📚 Resources": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Officer", ("manage_messages",), ()),
     ],
     "🔊 Voice": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "connect", "speak"), ()),
     ],
     "🎉 Community": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
     "📚 Guides": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("send_messages",), ()),
     ],
     "🔊 Social Voice": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "connect", "speak"), ()),
     ],
     "🎮 Content Voice": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "connect", "speak"), ()),
     ],
     "🛡️ Guild Feed": [
         ("@everyone", (), ("read_messages",)),
         *_deny_channel_access(_SENSITIVE_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("send_messages",), ()),
     ],
     # Staff-only.
@@ -668,7 +668,7 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
         ("@everyone", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Guest", ("read_messages", "send_messages", "connect", "speak"), ()),
         ("Alliance", ("read_messages", "send_messages", "connect", "speak"), ()),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "connect", "speak"), ()),
         ("Officer", ("manage_messages",), ()),
     ],
     # Old/noisy channels parked here. Keep them available to staff for audit,
@@ -700,7 +700,7 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
         ("Guest", (), ("read_messages", "send_messages", "connect")),
         ("Alliance", (), ("read_messages", "send_messages", "connect")),
         *_deny_channel_access(_DORMANT_DENY_ROLES),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "send_messages", "read_message_history"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Officer", ("read_messages", "send_messages", "read_message_history", "manage_messages"), ()),
         ("Commander", ("read_messages", "send_messages", "read_message_history", "manage_messages"), ()),
         ("Guild Leader", ("read_messages", "send_messages", "read_message_history", "manage_messages"), ()),
@@ -709,7 +709,7 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
         ("@everyone", (), ("read_messages", "send_messages", "connect")),
         *_deny_channel_access(("Guest", "Inactive", "Alumni")),
         ("Alliance", ("read_messages", "read_message_history"), ("send_messages",)),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Ambassador", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Commander", ("read_messages", "send_messages", "read_message_history"), ()),
@@ -719,7 +719,7 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
         ("@everyone", (), ("read_messages", "send_messages", "connect")),
         *_deny_channel_access(("Guest", "Inactive", "Alumni")),
         ("Alliance", ("read_messages", "read_message_history"), ("send_messages",)),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Ambassador", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Commander", ("read_messages", "send_messages", "read_message_history"), ()),
@@ -728,7 +728,7 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
     "👑-guild-leaders": [
         ("@everyone", (), ("read_messages", "send_messages", "connect")),
         ("Alliance", (), ("read_messages", "send_messages", "connect")),
-        (HOME_GUILD_ROLE_NAME, (), ("read_messages", "send_messages", "connect")),
+        ("HomeGuild", (), ("read_messages", "send_messages", "connect")),
         *_deny_channel_access(_DORMANT_DENY_ROLES),
         ("Ambassador", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
@@ -739,14 +739,14 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
         ("@everyone", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Guest", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Alliance", ("read_messages", "read_message_history"), ("send_messages",)),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
     "✌️-goodbye": [
         ("@everyone", (), ("read_messages", "send_messages", "connect")),
         ("Guest", (), ("read_messages", "send_messages", "connect")),
         ("Alliance", (), ("read_messages", "send_messages", "connect")),
-        (HOME_GUILD_ROLE_NAME, (), ("read_messages", "send_messages", "connect")),
+        ("HomeGuild", (), ("read_messages", "send_messages", "connect")),
         *_deny_channel_access(_DORMANT_DENY_ROLES),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
         ("Commander", ("read_messages", "send_messages", "read_message_history"), ()),
@@ -756,7 +756,7 @@ LAYOUT_CHANNEL_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str,
         ("@everyone", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Guest", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Alliance", ("read_messages", "read_message_history"), ("send_messages",)),
-        (HOME_GUILD_ROLE_NAME, ("read_messages", "read_message_history"), ("send_messages",)),
+        ("HomeGuild", ("read_messages", "read_message_history"), ("send_messages",)),
         ("Officer", ("read_messages", "send_messages", "read_message_history"), ()),
     ],
 }
@@ -917,7 +917,7 @@ EVENT_TYPES_BY_KEY.update({
 
 # ── Channel keyword candidates (for /lfg auto-config) ───────────────────────
 # Common board / post channel keyword candidates. Tuned so #weekly-events and
-# #looking-for-group win on a HOME-GUILD-style server while still
+# #looking-for-group win on a TRAVELERS-UNION-style server while still
 # matching plainer "#events" / "#lfg" channels elsewhere.
 BOARD_CHANNEL_KEYWORDS = (
     "weekly-events", "weekly events", "event-board", "events-board",

@@ -29,6 +29,7 @@ from cogs._content_config import (
     daily_timer_vote_due,
     parse_availability_slots,
     ranked_available_timer_indexes,
+    season_point_focus_recommendation_keys,
 )
 from cogs._content_views import _availability_slot_heading, _availability_timer_window
 from cogs._lfg_config import PrimeSlot, display_slot_label, prime_slot_display_label
@@ -83,7 +84,7 @@ class _NickTagDb:
         self.config = {
             "home_alliance_id": "home-alliance",
             "home_alliance_tag": "UoT",
-            "member_nickname_home_tag": "HG",
+            "member_nickname_home_tag": "TU",
             "member_nickname_guild_tags": '{"custom-guild": "CG"}',
         }
         self.guilds = {
@@ -316,11 +317,11 @@ def test_home_member_nickname_uses_tu_override() -> None:
     db = _NickTagDb()
     nick = tagged_nickname_for_profile(
         db,
-        "ExampleOfficer",
+        "ExamplePlayer",
         {"guild_id": "guild-home", "alliance_id": "home-alliance", "alliance_tag": "UoT"},
         home_member=True,
     )
-    assert nick == "[HG] ExampleOfficer"
+    assert nick == "[TU] ExamplePlayer"
 
 
 def test_home_alliance_member_uses_guild_initials_tag() -> None:
@@ -384,15 +385,15 @@ def test_unallied_member_has_no_nickname_tag() -> None:
 
 
 def test_tagged_nickname_extraction_accepts_any_tag() -> None:
-    assert extract_tagged_nickname_name("[ALLY] ExampleOfficer") == "ExampleOfficer"
+    assert extract_tagged_nickname_name("[UOT] ExamplePlayer") == "ExamplePlayer"
     assert extract_tagged_nickname_name("[BURNR] Visitor") == "Visitor"
     assert extract_tagged_nickname_name("NoTag") is None
 
 
 def test_strip_managed_nickname_tag_keeps_unknown_tags() -> None:
     db = _NickTagDb()
-    assert strip_managed_nickname_tag(db, "[HG] OldName") == "OldName"
-    assert strip_managed_nickname_tag(db, "[ALLY] NewName") == "NewName"
+    assert strip_managed_nickname_tag(db, "[TU] OldName") == "OldName"
+    assert strip_managed_nickname_tag(db, "[UOT] NewName") == "NewName"
     assert strip_managed_nickname_tag(db, "[BURNR] Visitor") == "Visitor"
     assert strip_managed_nickname_tag(db, "[XYZ] Stranger") is None
 
@@ -739,17 +740,17 @@ def test_slot_display_label_uses_compact_timer_range() -> None:
 
 
 def test_lfg_message_url_builds_jump_link() -> None:
-    event = {"channel_id": "222222222222222222", "message_id": "333333333333333333"}
+    event = {"channel_id": "1502194750298787860", "message_id": "1509651280132313159"}
     assert _lfg_message_url(event, "111111111111111111") == (
         "https://discord.com/channels/"
-        "111111111111111111/222222222222222222/333333333333333333"
+        "111111111111111111/1502194750298787860/1509651280132313159"
     )
 
 
 def test_lfg_message_url_skips_cleaned_posts() -> None:
     event = {
-        "channel_id": "222222222222222222",
-        "message_id": "333333333333333333",
+        "channel_id": "1502194750298787860",
+        "message_id": "1509651280132313159",
         "lfg_cleaned_at": "2026-06-01T03:15:00+00:00",
     }
     assert _lfg_message_url(event, "111111111111111111") is None
@@ -758,13 +759,13 @@ def test_lfg_message_url_skips_cleaned_posts() -> None:
 def test_linked_event_title_links_when_message_ids_exist() -> None:
     event = {
         "title": "Ganking - Timer claim test",
-        "channel_id": "222222222222222222",
-        "message_id": "333333333333333333",
+        "channel_id": "1502194750298787860",
+        "message_id": "1509651280132313159",
     }
     assert _linked_event_title(event, "111111111111111111") == (
         "**[Ganking - Timer claim test]"
         "(https://discord.com/channels/"
-        "111111111111111111/222222222222222222/333333333333333333)**"
+        "111111111111111111/1502194750298787860/1509651280132313159)**"
     )
 
 
@@ -813,6 +814,16 @@ def test_availability_recommendation_keys_are_event_type_keys() -> None:
     assert "roads" in availability_recommendation_keys(7)
     assert "zvz" not in availability_recommendation_keys(7)
     assert "zvz" in availability_recommendation_keys(16)
+
+
+def test_season_point_focus_recommendations_exclude_casual_options() -> None:
+    keys = season_point_focus_recommendation_keys(None, 20, limit=25)
+    assert "zvz" in keys
+    assert "roads" in keys
+    assert "faction" not in keys
+    assert "crystal_arena" not in keys
+    assert "economy" not in keys
+    assert "transport" not in keys
 
 
 def test_daily_timer_slot_windows_span_evening_cycle() -> None:

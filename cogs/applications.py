@@ -26,7 +26,6 @@ from utils import (
     success_embed,
 )
 import albion_api
-from config import HOME_GUILD_NAME
 
 
 # In-flight application submits (discord_id strings). Prevents the same user
@@ -68,7 +67,7 @@ MIN_COMBAT_FAME_KEY = "application_min_combat_fame"
 MIN_MEMBERSHIP_HOURS_KEY = "application_min_membership_hours"
 DEFAULT_MIN_MEMBERSHIP_HOURS = 72
 HOME_GUILD_KEY = "home_guild_name"
-DEFAULT_HOME_GUILD = HOME_GUILD_NAME
+DEFAULT_HOME_GUILD = "HomeGuild"
 POLL_INTERVAL_MINUTES = 10
 
 # Application status values:
@@ -1035,6 +1034,18 @@ class Applications(commands.Cog):
             )
         except Exception as exc:  # noqa: BLE001
             error_log(f"shout-out for {target_member} failed: {exc!r}")
+
+        if new_lifecycle == "Recruit":
+            try:
+                squad_cog = self.bot.get_cog("Squads")
+                if squad_cog and hasattr(squad_cog, "maybe_auto_assign_recruit"):
+                    await squad_cog.maybe_auto_assign_recruit(
+                        target_member,
+                        assigned_by=app.get("reviewed_by") or "system",
+                        reason=f"Guild application #{app['id']} confirmed TU Recruit",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                error_log(f"squad auto-assign for {target_member} failed: {exc!r}")
 
         # Update the original review embed if we can find the channel/message.
         review_channel_id = self.bot.db.get_config(REVIEW_CHANNEL_KEY) or self.bot.db.get_config("officer_channel_id")

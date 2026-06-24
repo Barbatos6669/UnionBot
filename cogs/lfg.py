@@ -47,11 +47,16 @@ from cogs._lfg_config import (
 
 # ── Helpers + UI views + guild-scan dump (extracted to sibling _lfg_*.py) ───
 from cogs._lfg_helpers import (
+    _create_discord_scheduled_event,
+    _create_lfg_discussion_thread,
     _delete_event_access_role,
     _ensure_event_access_role,
     _event_voice_channel_name,
     _event_voice_overwrites,
     _format_event_embed,
+    _grant_event_access_role,
+    _get_ping_for_type,
+    _get_post_channel_for_type,
     _sync_event_access_role_members,
     auto_discover_config,
 )
@@ -59,11 +64,18 @@ from cogs._lfg_scan import (
     build_guild_scan_text,
     write_guild_scan_file,
 )
+from cogs._event_reports import (
+    batch_embeds_for_send,
+    build_event_report_embed,
+    build_event_report_view,
+)
 from cogs._lfg_views import (
     EventBoardView,
     EventSignupView,
     _board_embed,
+    _on_first_event_signup,
     _refresh_event_message,
+    _refresh_prime_claim_dashboards,
 )
 from cogs._typing import Bot
 from debug import error_log, info_log, warning_log
@@ -71,6 +83,19 @@ from utils import error_embed, info_embed, success_embed
 
 CFG_EVENT_VOICE_CATEGORY = "lfg_event_voice_category_id"
 CFG_UNTRACKED_CLEANUP_HOURS = "lfg_untracked_cleanup_hours"
+CFG_RECURRING_CTA_ENABLED = "lfg_recurring_02_cta_enabled"
+CFG_RECURRING_CTA_PING = "lfg_recurring_02_cta_ping_on_create"
+RECURRING_CTA_TITLE = "Daily Content - CTA"
+RECURRING_CTA_SLOT_LABEL = "PRIME 02:00-03:00"
+RECURRING_CTA_HOUR_UTC = 2
+RECURRING_CTA_EVENT_TYPE = "alliance"
+RECURRING_CTA_FALLBACK_DESCRIPTION = (
+    "We are building daily alliance content at 02:00 UTC to create "
+    "consistency, activity, and reliable groups.\n\n"
+    "Sign up if you expect regear, rewards, payouts, or priority for limited "
+    "slots. Be in voice, follow the shotcaller, keep comms clear, and come "
+    "ready with food, pots, mount, cape, and repair silver."
+)
 
 
 # ── Cog ─────────────────────────────────────────────────────────────────────
@@ -81,11 +106,13 @@ class LFG(commands.Cog):
         self.dispatch_reminders.start()
         self.manage_event_voice_channels.start()
         self.cleanup_finished_lfg_posts.start()
+        self.ensure_daily_02_cta.start()
 
     def cog_unload(self) -> None:
         self.dispatch_reminders.cancel()
         self.manage_event_voice_channels.cancel()
         self.cleanup_finished_lfg_posts.cancel()
+        self.ensure_daily_02_cta.cancel()
 
     # ── Pre-event reminder dispatcher ──────────────────────────────────
     # Runs every minute. For each open event whose start time falls within
@@ -184,6 +211,227 @@ class LFG(commands.Cog):
             self.dispatch_reminders.restart()
         except Exception as restart_exc:  # pragma: no cover - defensive
             error_log(f"Failed to restart dispatch_reminders: {restart_exc!r}")
+
+    # ── Daily 02:00 UTC CTA keeper ─────────────────────────────────────
+    def _config_enabled(self, key: str, *, default: bool = False) -> bool:
+        raw = self.bot.db.get_config(key)
+        if raw is None or str(raw).strip() == "":
+            return bool(default)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+    def _next_daily_cta_window(
+        self,
+        now: datetime.datetime | None = None,
+    ) -> tuple[datetime.datetime, datetime.datetime]:
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+        now = now.astimezone(datetime.timezone.utc)
+        starts_at = now.replace(
+            hour=RECURRING_CTA_HOUR_UTC,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        if starts_at <= now:
+            starts_at += datetime.timedelta(days=1)
+        return starts_at, starts_at + datetime.timedelta(hours=1)
+
+    def _fetch_active_daily_cta(self, now: datetime.datetime) -> dict | None:
+        db = self.bot.db
+        try:
+            if not db.connection:
+                db.connect()
+            db.cursor.execute(
+                """
+                SELECT * FROM lfg_events
+                WHERE status = 'open'
+                  AND is_prime = 1
+                  AND title = ?
+                  AND slot_label = ?
+                  AND datetime(ends_at) >= datetime(?)
+                ORDER BY datetime(starts_at) ASC
+                LIMIT 1
+                """,
+                (
+                    RECURRING_CTA_TITLE,
+                    RECURRING_CTA_SLOT_LABEL,
+                    now.isoformat(),
+                ),
+            )
+            row = db.cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"daily CTA lookup failed: {exc!r}")
+            return None
+
+    def _fetch_daily_cta_template(self) -> dict:
+        db = self.bot.db
+        try:
+            if not db.connection:
+                db.connect()
+            db.cursor.execute(
+                """
+                SELECT * FROM lfg_events
+                WHERE title = ?
+                  AND slot_label = ?
+                  AND is_prime = 1
+                ORDER BY datetime(starts_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (RECURRING_CTA_TITLE, RECURRING_CTA_SLOT_LABEL),
+            )
+            row = db.cursor.fetchone()
+            if row:
+                return dict(row)
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"daily CTA template lookup failed: {exc!r}")
+        return {
+            "title": RECURRING_CTA_TITLE,
+            "description": RECURRING_CTA_FALLBACK_DESCRIPTION,
+            "comp_notes": "",
+            "ip_requirement": "1200 IP",
+            "prep_minutes": 30,
+            "review_minutes": 15,
+            "creator_id": "",
+            "event_type": RECURRING_CTA_EVENT_TYPE,
+        }
+
+    async def _post_daily_cta_from_template(
+        self,
+        *,
+        template: dict,
+        starts_at: datetime.datetime,
+        ends_at: datetime.datetime,
+    ) -> int | None:
+        db = self.bot.db
+        guild = self.bot.guilds[0] if self.bot.guilds else None
+        if guild is None:
+            warning_log("daily CTA keeper skipped: bot is not in a guild.")
+            return None
+
+        event_type = str(template.get("event_type") or RECURRING_CTA_EVENT_TYPE)
+        channel = _get_post_channel_for_type(db, guild, event_type)
+        if channel is None:
+            warning_log(
+                "daily CTA keeper skipped: alliance/default LFG channel is not configured."
+            )
+            return None
+
+        overlap = db.fetch_overlapping_prime_events(
+            starts_at.isoformat(),
+            ends_at.isoformat(),
+        )
+        if overlap:
+            names = ", ".join(f"#{e['id']} {e['title']!r}" for e in overlap[:3])
+            info_log(
+                f"daily CTA keeper skipped {starts_at.isoformat()}: "
+                f"prime timer already booked by {names}."
+            )
+            return None
+
+        event_id = db.create_lfg_event(
+            slot_label=RECURRING_CTA_SLOT_LABEL,
+            is_prime=True,
+            title=str(template.get("title") or RECURRING_CTA_TITLE),
+            description=str(
+                template.get("description") or RECURRING_CTA_FALLBACK_DESCRIPTION
+            ),
+            comp_notes=str(template.get("comp_notes") or ""),
+            ip_requirement=str(template.get("ip_requirement") or "1200 IP"),
+            starts_at=starts_at.isoformat(),
+            ends_at=ends_at.isoformat(),
+            prep_minutes=int(template.get("prep_minutes") or 30),
+            review_minutes=int(template.get("review_minutes") or 15),
+            creator_id=str(template.get("creator_id") or ""),
+            event_type=event_type,
+        )
+        if not event_id:
+            error_log("daily CTA keeper failed: create_lfg_event returned 0.")
+            return None
+
+        event = db.fetch_lfg_event(event_id)
+        if not event:
+            db.delete_lfg_event(event_id)
+            error_log(f"daily CTA keeper failed: event #{event_id} missing after create.")
+            return None
+
+        ping = (
+            _get_ping_for_type(db, event_type)
+            if self._config_enabled(CFG_RECURRING_CTA_PING, default=False)
+            else None
+        )
+        try:
+            msg = await channel.send(
+                content=ping or None,
+                embed=_format_event_embed(db, event),
+                view=EventSignupView(event_id),
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False,
+                ),
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            with contextlib.suppress(Exception):
+                db.delete_lfg_event(event_id)
+            error_log(f"daily CTA keeper post failed for #{event_id}: {exc!r}")
+            return None
+
+        db.set_lfg_message(event_id, str(channel.id), str(msg.id))
+        event = db.fetch_lfg_event(event_id) or event
+        await _create_lfg_discussion_thread(db, event, msg)
+
+        scheduled = await _create_discord_scheduled_event(
+            guild,
+            name=event["title"],
+            description=(
+                f"{event.get('description') or ''}\n\n"
+                f"Slot: {display_slot_label(event.get('slot_label'))}\n"
+                f"Sign up: {msg.jump_url}"
+            ).strip(),
+            starts_at=starts_at,
+            ends_at=ends_at,
+            location=msg.jump_url,
+        )
+        if scheduled is not None:
+            db.set_lfg_scheduled_event_id(event_id, str(scheduled.id))
+
+        event = db.fetch_lfg_event(event_id) or event
+        await _refresh_prime_claim_dashboards(self.bot, event, "daily CTA create")
+        info_log(
+            f"daily CTA keeper created event #{event_id} "
+            f"for {starts_at.isoformat()} in #{channel.name}."
+        )
+        return event_id
+
+    @tasks.loop(minutes=10)
+    async def ensure_daily_02_cta(self) -> None:
+        if not self._config_enabled(CFG_RECURRING_CTA_ENABLED, default=True):
+            return
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if self._fetch_active_daily_cta(now):
+            return
+
+        starts_at, ends_at = self._next_daily_cta_window(now)
+        template = self._fetch_daily_cta_template()
+        await self._post_daily_cta_from_template(
+            template=template,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+
+    @ensure_daily_02_cta.before_loop
+    async def _before_ensure_daily_02_cta(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @ensure_daily_02_cta.error
+    async def _ensure_daily_02_cta_error(self, exc: BaseException) -> None:
+        error_log(f"ensure_daily_02_cta crashed: {exc!r}; restarting loop.")
+        try:
+            self.ensure_daily_02_cta.restart()
+        except Exception as restart_exc:  # pragma: no cover - defensive
+            error_log(f"Failed to restart ensure_daily_02_cta: {restart_exc!r}")
 
     # ── Temporary event voice channels ─────────────────────────────────
     def _event_dt(self, raw: str | None) -> datetime.datetime | None:
@@ -748,6 +996,63 @@ class LFG(commands.Cog):
             await msg.edit(embed=_format_event_embed(self.bot.db, event_row))
         except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError) as exc:
             warning_log(f"refresh LFG message #{event_row.get('id')} failed: {exc!r}")
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        """Auto-sign members when they are moved into an event voice channel.
+
+        Officers often drag people into a secure event VC after form-up. That
+        should count as LFG participation intent too, otherwise analytics,
+        access-role sync, loot splits, and regear context undercount the run.
+        """
+        if member.bot:
+            return
+        if after.channel is None:
+            return
+        if before.channel and before.channel.id == after.channel.id:
+            return
+        if not isinstance(after.channel, discord.VoiceChannel):
+            return
+
+        event = self.bot.db.fetch_lfg_event_by_voice_channel_id(str(after.channel.id))
+        if not event:
+            return
+
+        event_id = int(event["id"])
+        added = self.bot.db.add_lfg_signup(event_id, str(member.id))
+        if not added:
+            return
+
+        info_log(
+            f"LFG #{event_id}: auto-signed {member} via event voice join "
+            f"({after.channel.name})."
+        )
+
+        try:
+            _on_first_event_signup(
+                self.bot,
+                self.bot.db,
+                discord_id=str(member.id),
+                event=event,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"first-event hook failed for voice auto-signup {member}: {exc!r}")
+
+        await _grant_event_access_role(
+            self.bot.db,
+            after.channel.guild,
+            event,
+            member.id,
+            reason=f"LFG #{event_id} event voice auto-signup",
+        )
+        event = self.bot.db.fetch_lfg_event(event_id) or event
+        await self._refresh_lfg_message(event)
+        await _refresh_prime_claim_dashboards(self.bot, event, "signup")
 
     @commands.Cog.listener()
     async def on_scheduled_event_user_add(
@@ -2024,6 +2329,77 @@ class LFG(commands.Cog):
         info_log(
             f"{interaction.user} viewed /lfg recap #{event_id} "
             f"(signed={signed}, attended={attended}, not_marked={not_marked_attended})."
+        )
+
+    @lfg_group.command(
+        name="event-report",
+        description="Build a detailed attendance, stats, value, and regear report.",
+    )
+    @app_commands.describe(
+        event_id="The LFG event ID to report on.",
+        include_killboard="Fetch Albion kill/death events for this report.",
+        public="Post visibly in this channel instead of only to you.",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def event_report(
+        self,
+        interaction: discord.Interaction,
+        event_id: int,
+        include_killboard: bool = True,
+        public: bool = False,
+    ) -> None:
+        await interaction.response.defer(ephemeral=not public, thinking=True)
+        event = self.bot.db.fetch_lfg_event(int(event_id))
+        if not event:
+            await interaction.followup.send(
+                embed=error_embed("Not found", f"No LFG event with id {event_id}."),
+                ephemeral=not public,
+            )
+            return
+        try:
+            threshold_pct = int(
+                self.bot.db.get_config("automation_voice_attendance_min_pct") or "50"
+            )
+        except (TypeError, ValueError):
+            threshold_pct = 50
+        try:
+            graph_files: list[discord.File] = []
+            extra_embeds: list[discord.Embed] = []
+            embed = await build_event_report_embed(
+                self.bot,
+                event,
+                threshold_pct=threshold_pct,
+                fetch_killboard=include_killboard,
+                include_graph=True,
+                graph_files=graph_files,
+                extra_embeds=extra_embeds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"/lfg event-report #{event_id} failed: {exc!r}")
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Report failed",
+                    "I could not build that report. Check the bot logs for details.",
+                ),
+                ephemeral=True,
+            )
+            return
+        report_embeds = [embed, *extra_embeds]
+        for idx, embed_batch in enumerate(batch_embeds_for_send(report_embeds)):
+            kwargs: dict = {
+                "embeds": embed_batch,
+                "ephemeral": not public,
+                "allowed_mentions": discord.AllowedMentions.none(),
+            }
+            if idx == 0:
+                if public:
+                    kwargs["view"] = build_event_report_view(event_id)
+                if graph_files:
+                    kwargs["file"] = graph_files[0]
+            await interaction.followup.send(**kwargs)
+        info_log(
+            f"{interaction.user} generated /lfg event-report #{event_id} "
+            f"killboard={include_killboard} public={public}."
         )
 
     async def _run_layout(

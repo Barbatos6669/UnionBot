@@ -10,10 +10,8 @@ import json
 import re
 from typing import Any
 
-from config import HOME_GUILD_NICK_TAG, HOME_ALLIANCE_TAG
-
-DEFAULT_HOME_NICK_TAG = HOME_GUILD_NICK_TAG
-LEGACY_HOME_NICK_TAGS = tuple(tag for tag in (HOME_ALLIANCE_TAG,) if tag)
+DEFAULT_HOME_NICK_TAG = "TU"
+LEGACY_HOME_NICK_TAGS = ("UOT",)
 HOME_NICK_TAG_CONFIG = "member_nickname_home_tag"
 GUILD_NICK_TAGS_CONFIG = "member_nickname_guild_tags"
 
@@ -40,7 +38,7 @@ def alliance_display_tag(raw_tag: Any, raw_name: Any = None) -> str | None:
 
     Albion responses sometimes put the short alliance tag in ``AllianceName``
     while leaving ``AllianceTag`` blank. Use that fallback only when the name
-    already looks like a compact tag, so full names like "Example Alliance"
+    already looks like a compact tag, so full names like "Union of Travelers"
     do not become awkward nickname prefixes.
     """
     tag = clean_nick_tag(raw_tag)
@@ -53,7 +51,7 @@ def alliance_display_tag(raw_tag: Any, raw_name: Any = None) -> str | None:
 
 
 def home_nick_tag(db) -> str:
-    """Configured home-guild nickname tag, defaulting to ``HOME_GUILD_NICK_TAG``."""
+    """Configured home-guild nickname tag, defaulting to TU."""
     configured = clean_nick_tag(db.get_config(HOME_NICK_TAG_CONFIG))
     if configured:
         return configured
@@ -65,7 +63,7 @@ def guild_initials_tag(raw_name: Any) -> str | None:
 
     Alliance members should be visible by guild, not just alliance. Multi-word
     guilds use initials (``Divine Departure`` -> ``DD``). CamelCase one-word
-    guilds use capital letters (``HomeGuild`` -> ``HG``), while plain
+    guilds use capital letters (``HomeGuild`` -> ``TU``), while plain
     one-word names fall back to the first few characters.
     """
     name = str(raw_name or "").strip().strip("[]").strip()

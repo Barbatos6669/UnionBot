@@ -372,6 +372,179 @@ class PolicyDriftView(discord.ui.View):
             await interaction.response.defer()
 
 
+# ── Registration cleanup task buttons ───────────────────────────────────────
+
+
+class RegistrationCleanupConfirmKickView(discord.ui.View):
+    """Short-lived confirmation for kicking long-unverified members."""
+
+    def __init__(self, *, days: int) -> None:
+        super().__init__(timeout=60)
+        self.days = int(days)
+
+    @discord.ui.button(
+        label="Confirm kick eligible",
+        style=discord.ButtonStyle.danger,
+        emoji="🚪",
+        custom_id="automation:registration_cleanup:kick_confirm",
+    )
+    async def confirm(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        if not _officer_check(interaction):
+            await _reject_non_officer(interaction)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from the server."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        bot: Bot = interaction.client  # type: ignore[assignment]
+        from cogs.automation import _run_registration_cleanup_kicks
+
+        embed = await _run_registration_cleanup_kicks(
+            bot, interaction.guild, actor=interaction.user, days=self.days,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="Cancel",
+        style=discord.ButtonStyle.secondary,
+        emoji="✖️",
+        custom_id="automation:registration_cleanup:kick_cancel",
+    )
+    async def cancel(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        if not _officer_check(interaction):
+            await _reject_non_officer(interaction)
+            return
+        await interaction.response.edit_message(
+            embed=info_embed("Cancelled", "No members were kicked."),
+            view=None,
+        )
+
+
+class RegistrationCleanupView(discord.ui.View):
+    """Persistent controls for an officer registration-cleanup task."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Refresh list",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id="automation:registration_cleanup:refresh",
+    )
+    async def refresh(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        if not _officer_check(interaction):
+            await _reject_non_officer(interaction)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from the server."),
+                ephemeral=True,
+            )
+            return
+        bot: Bot = interaction.client  # type: ignore[assignment]
+        from cogs.automation import _build_registration_cleanup_embed
+
+        await interaction.response.edit_message(
+            embed=_build_registration_cleanup_embed(bot, interaction.guild),
+            view=self,
+        )
+
+    @discord.ui.button(
+        label="DM register reminder",
+        style=discord.ButtonStyle.primary,
+        emoji="📝",
+        custom_id="automation:registration_cleanup:nudge",
+    )
+    async def nudge(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        if not _officer_check(interaction):
+            await _reject_non_officer(interaction)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from the server."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        bot: Bot = interaction.client  # type: ignore[assignment]
+        from cogs.automation import _run_registration_cleanup_nudges
+
+        embed = await _run_registration_cleanup_nudges(
+            bot, interaction.guild, actor=interaction.user,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="Kick eligible",
+        style=discord.ButtonStyle.danger,
+        emoji="🚪",
+        custom_id="automation:registration_cleanup:kick",
+    )
+    async def kick(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        if not _officer_check(interaction):
+            await _reject_non_officer(interaction)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from the server."),
+                ephemeral=True,
+            )
+            return
+        bot: Bot = interaction.client  # type: ignore[assignment]
+        from cogs.automation import (
+            _DEFAULT_UNVERIFIED_KICK_DAYS,
+            _collect_registration_cleanup_targets,
+            _get_int_config,
+        )
+
+        days = _get_int_config(
+            bot.db, "automation_unverified_kick_days",
+            _DEFAULT_UNVERIFIED_KICK_DAYS,
+        )
+        targets = _collect_registration_cleanup_targets(
+            interaction.guild, min_days=days,
+        )
+        if not targets:
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "Nothing eligible to kick",
+                    f"No Unverified members are past the **{days}d** kick threshold.",
+                ),
+                ephemeral=True,
+            )
+            return
+        lines = [f"• {m.mention} (`{m}`) — {age}d" for m, age in targets[:10]]
+        if len(targets) > 10:
+            lines.append(f"…and {len(targets) - 10} more.")
+        embed = discord.Embed(
+            title=f"Confirm kick — {len(targets)} eligible",
+            description=(
+                f"This will kick Unverified members at or above the **{days}d** threshold.\n\n"
+                + "\n".join(lines)
+            ),
+            color=discord.Color.dark_red(),
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=RegistrationCleanupConfirmKickView(days=days),
+            ephemeral=True,
+        )
+
+
 class UnderfillAlertView(discord.ui.View):
     """Per-event view attached to the "comp under-filled" automation alert.
 

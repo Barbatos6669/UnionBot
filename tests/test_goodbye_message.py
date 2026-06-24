@@ -9,7 +9,7 @@ from cogs.events import _format_goodbye_embed, _tenure_text
 def _member(*, joined_at: dt.datetime | None = None):
     return SimpleNamespace(
         id=123456789,
-        display_name="ExampleOfficer",
+        display_name="ExampleMember",
         guild=SimpleNamespace(name="HOME GUILD"),
         joined_at=joined_at,
         display_avatar=SimpleNamespace(url=""),
@@ -30,7 +30,7 @@ def test_goodbye_embed_includes_profile_details() -> None:
     embed = _format_goodbye_embed(
         _member(joined_at=joined),
         {
-            "albion_name": "ExampleOfficer",
+            "albion_name": "ExamplePlayer",
             "guild_name": "Home Guild",
             "lifecycle_role": "Veteran",
         },
@@ -39,8 +39,8 @@ def test_goodbye_embed_includes_profile_details() -> None:
 
     fields = {field.name: field.value for field in embed.fields}
 
-    assert "ExampleOfficer" in embed.description
-    assert "ExampleOfficer" in fields["Albion"]
+    assert "ExampleMember" in embed.description
+    assert "ExamplePlayer" in fields["Albion"]
     assert "Home Guild" in fields["Albion"]
     assert fields["Lifecycle"] == "Veteran"
     assert "21 days" in fields["Time in server"]

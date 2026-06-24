@@ -157,3 +157,73 @@ def test_cleanup_mark_prevents_retry(db):
     rows = db.fetch_lfg_events_to_cleanup(now.isoformat())
 
     assert all(r["id"] != event_id for r in rows)
+
+
+def test_cleanup_waits_for_event_voice_to_end(db):
+    now = _dt.datetime(2026, 6, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    event_id = _make(db, -90, now, title="still in voice")
+    db.set_lfg_message(event_id, "123", "456")
+    db.set_lfg_voice_channel_id(event_id, "789", now.isoformat())
+    db.execute("UPDATE lfg_events SET status = 'completed' WHERE id = ?", (event_id,))
+
+    rows = db.fetch_lfg_events_to_cleanup(now.isoformat())
+
+    assert all(r["id"] != event_id for r in rows)
+
+    db.mark_lfg_voice_deleted(event_id, now.isoformat())
+
+    rows = db.fetch_lfg_events_to_cleanup(now.isoformat())
+
+    assert [r["id"] for r in rows] == [event_id]
+
+
+# ── long-running event voice attendance ──────────────────────────────────
+
+
+def test_active_event_window_includes_ended_event_with_live_voice(db):
+    now = _dt.datetime.now(_dt.timezone.utc)
+    event_id = _make(db, -90, now, title="overtime")
+    db.set_lfg_voice_channel_id(event_id, "789", now.isoformat())
+
+    rows = db.fetch_active_event_window()
+
+    assert event_id in {r["id"] for r in rows}
+
+
+def test_active_event_window_excludes_ended_event_after_voice_deleted(db):
+    now = _dt.datetime.now(_dt.timezone.utc)
+    event_id = _make(db, -90, now, title="overtime ended")
+    db.set_lfg_voice_channel_id(event_id, "789", now.isoformat())
+    db.mark_lfg_voice_deleted(event_id, now.isoformat())
+
+    rows = db.fetch_active_event_window()
+
+    assert event_id not in {r["id"] for r in rows}
+
+
+def test_reconciliation_waits_for_event_voice_deletion(db):
+    now = _dt.datetime.now(_dt.timezone.utc)
+    event_id = _make(db, -90, now, title="wait for voice")
+    db.set_lfg_voice_channel_id(event_id, "789", now.isoformat())
+
+    rows = db.fetch_events_needing_reconciliation(fallback_grace_minutes=30)
+
+    assert event_id not in {r["id"] for r in rows}
+
+    db.mark_lfg_voice_deleted(event_id, now.isoformat())
+
+    rows = db.fetch_events_needing_reconciliation(fallback_grace_minutes=30)
+
+    assert event_id in {r["id"] for r in rows}
+
+
+def test_reconciliation_uses_fallback_grace_for_no_voice_events(db):
+    now = _dt.datetime.now(_dt.timezone.utc)
+    recent_no_voice = _make(db, -75, now, title="recent no voice")
+    old_no_voice = _make(db, -120, now, title="old no voice")
+
+    rows = db.fetch_events_needing_reconciliation(fallback_grace_minutes=30)
+    ids = {r["id"] for r in rows}
+
+    assert recent_no_voice not in ids
+    assert old_no_voice in ids

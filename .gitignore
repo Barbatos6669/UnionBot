@@ -39,6 +39,7 @@ Thumbs.db
 # Local-only notes (never push)
 NOTES.local.md
 *.local.md
+*local-only*.md
 
 # Auto-generated guild inventory dumps (refreshed hourly by the bot)
 data/guild-scan-*.txt

@@ -107,3 +107,29 @@ def test_only_counts_target_user(db):
     )
     assert stats_42["attended"] == 1 and stats_42["not_marked_attended"] == 0
     assert stats_99["attended"] == 0 and stats_99["not_marked_attended"] == 1
+
+
+def test_fetch_regear_request_for_death_dedupes_by_member_and_killboard_event(db):
+    first = db.create_regear_request(
+        discord_id="42",
+        event_id=987654,
+        content_type="CTA",
+        gear_value=123456,
+        image_url="https://albiononline.com/en/killboard/kill/987654",
+        notes="auto event regear",
+    )
+    db.create_regear_request(
+        discord_id="99",
+        event_id=987654,
+        content_type="CTA",
+        gear_value=654321,
+        image_url="https://albiononline.com/en/killboard/kill/987654",
+        notes="same death id, different member",
+    )
+
+    found = db.fetch_regear_request_for_death("42", 987654)
+
+    assert found is not None
+    assert found["id"] == first
+    assert found["discord_id"] == "42"
+    assert db.fetch_regear_request_for_death("42", 123) is None

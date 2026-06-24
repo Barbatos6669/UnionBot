@@ -46,6 +46,7 @@ CFG_DAILY_TIMER_VOTE_MINUTE = "content_curator_daily_timer_vote_minute"
 CFG_DAILY_TIMER_VOTE_DURATION = "content_curator_daily_timer_vote_duration_min"
 CFG_DAILY_TIMER_MIN_AVAILABLE = "content_curator_daily_timer_min_available"
 CFG_DAILY_TIMER_PING_ROLE = "content_curator_daily_timer_ping_role_id"
+CFG_DAILY_TIMER_SEASON_KEYS = "content_curator_daily_timer_season_keys"
 
 # Quick-vote ("next match" style) config
 CFG_QUICKVOTE_DURATION_MIN = "content_curator_quickvote_duration_min"  # default 10
@@ -108,6 +109,17 @@ AVAILABILITY_RECOMMENDATION_KEYS: tuple[str, ...] = (
     "group_dungeon", "gank", "hellgate", "duo_mists",
     "abyssal_depths", "tracking", "transport", "pvp",
     "gathering", "economy",
+)
+
+# Daily prime-timer funnel options should push the guild season, not just fill
+# time. These are event-board categories that can be aimed at Might/Conqueror
+# progress when run in lethal Outlands/Roads context. Casual faction, arena,
+# economy, and transport are intentionally excluded from this default set.
+SEASON_POINT_FOCUS_KEYS: tuple[str, ...] = (
+    "zvz", "alliance", "world_boss", "ava_dungeon", "roads",
+    "static_dungeon", "group_dungeon", "small_scale", "gank",
+    "hellgate", "duo_mists", "abyssal_depths", "tracking",
+    "gathering", "pvp",
 )
 
 
@@ -184,7 +196,37 @@ def parse_availability_slots(raw: str, limit: int = 25) -> list[str]:
     return out
 
 
-def availability_recommendation_keys(headcount: int, limit: int = 8) -> list[str]:
+def _clean_event_key_list(keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for key in keys:
+        clean = str(key or "").strip()
+        if not clean or clean in seen or clean not in EVENT_TYPES_BY_KEY:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return tuple(out)
+
+
+def configured_season_point_focus_keys(db) -> tuple[str, ...]:
+    """Return daily-timer focus keys, allowing officers to override in config."""
+    raw = ""
+    try:
+        raw = str(db.get_config(CFG_DAILY_TIMER_SEASON_KEYS) or "").strip()
+    except Exception:  # noqa: BLE001 - helper must stay safe in tests/startup
+        raw = ""
+    if not raw:
+        return _clean_event_key_list(SEASON_POINT_FOCUS_KEYS)
+    configured = _clean_event_key_list(tuple(re.split(r"[\s,|;]+", raw)))
+    return configured or _clean_event_key_list(SEASON_POINT_FOCUS_KEYS)
+
+
+def availability_recommendation_keys(
+    headcount: int,
+    limit: int = 8,
+    *,
+    focus_keys: tuple[str, ...] | list[str] | None = None,
+) -> list[str]:
     """Return event-type keys that are realistic for the available headcount."""
     try:
         count = max(0, int(headcount))
@@ -194,7 +236,12 @@ def availability_recommendation_keys(headcount: int, limit: int = 8) -> list[str
         return []
 
     candidates: list[tuple[int, int, str]] = []
-    for idx, key in enumerate(AVAILABILITY_RECOMMENDATION_KEYS):
+    key_source = _clean_event_key_list(
+        tuple(focus_keys)
+        if focus_keys is not None
+        else AVAILABILITY_RECOMMENDATION_KEYS
+    )
+    for idx, key in enumerate(key_source):
         if key not in EVENT_TYPES_BY_KEY:
             continue
         need = activity_min(key)
@@ -203,6 +250,17 @@ def availability_recommendation_keys(headcount: int, limit: int = 8) -> list[str
     candidates.sort(key=lambda row: (-row[0], row[1]))
 
     return [key for _need, _idx, key in candidates[: max(1, limit)]]
+
+
+def season_point_focus_recommendation_keys(
+    db, headcount: int, limit: int = 8,
+) -> list[str]:
+    """Return daily prime-timer choices that scale with headcount and season value."""
+    return availability_recommendation_keys(
+        headcount,
+        limit=limit,
+        focus_keys=configured_season_point_focus_keys(db),
+    )
 
 
 def availability_content_recommendations(headcount: int, limit: int = 8) -> list[str]:

@@ -49,6 +49,11 @@ if _raw_guild:
         error_log(f"Invalid GUILD_DISCORD_ID: {_raw_guild!r}; falling back to global sync.")
 
 COGS_DIR = Path(__file__).parent / "cogs"
+DISABLED_COGS: set[str] = {
+    item.strip().removeprefix("cogs.").lower()
+    for item in (os.getenv("DISABLED_COGS") or "").replace(";", ",").split(",")
+    if item.strip()
+}
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +126,9 @@ class UnionBot(commands.Bot):
             if path.name.startswith("_"):
                 continue
             ext = f"cogs.{path.stem}"
+            if path.stem.lower() in DISABLED_COGS:
+                info_log(f"Skipping disabled cog: {ext}")
+                continue
             try:
                 await self.load_extension(ext)
                 info_log(f"Loaded cog: {ext}")
@@ -381,4 +389,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -138,51 +138,77 @@ def _slot_summary_line(slot: dict) -> str:
 
 def _chunk_lines_for_field(lines: list[str], limit: int = 1024) -> list[str]:
     """Pack ``lines`` into successive newline-joined chunks, each at most
-    ``limit`` chars. Never splits a single line — if one line alone is
-    longer than ``limit`` it's truncated with ``…``. Pure helper.
+    ``limit`` chars. Very long individual lines are split rather than
+    truncated so comp views do not silently drop gear or role text.
     """
     chunks: list[str] = []
     buf: list[str] = []
     used = 0
     for line in lines:
-        ln = line if len(line) <= limit else line[: max(0, limit - 1)] + "…"
-        add = len(ln) + (1 if buf else 0)  # +1 for the joining newline
-        if used + add > limit and buf:
-            chunks.append("\n".join(buf))
-            buf = [ln]
-            used = len(ln)
-        else:
-            buf.append(ln)
-            used += add
+        pieces = [line[i:i + limit] for i in range(0, len(line), limit)] or [""]
+        for ln in pieces:
+            add = len(ln) + (1 if buf else 0)  # +1 for the joining newline
+            if used + add > limit and buf:
+                chunks.append("\n".join(buf))
+                buf = [ln]
+                used = len(ln)
+            else:
+                buf.append(ln)
+                used += add
     if buf:
         chunks.append("\n".join(buf))
     return chunks
 
 
-def _build_comp_embed(comp: dict, slots: list[dict]) -> discord.Embed:
-    """Render a full comp in one embed, grouped by build_type.
+def _build_comp_embeds(comp: dict, slots: list[dict]) -> list[discord.Embed]:
+    """Render a full comp grouped by build_type, paging instead of truncating.
 
     Honors Discord's real embed limits:
       * 1024 chars per field — long sections (e.g. a ZvZ DPS group with
         20+ slots) are split across multiple ``(cont.)`` fields rather
         than silently chopped.
-      * 25 fields per embed and ~6000 total chars — only when one of
-        those is actually hit do we mark the embed truncated.
+      * 25 fields per embed and ~6000 total chars — when one embed fills,
+        another embed is created.
     """
     title = comp["name"]
     if comp.get("content_type"):
         title = f"{comp['name']}  ·  {comp['content_type']}"
-    embed = discord.Embed(
-        title=f"⚔️ {title}",
-        description=(comp.get("description") or "").strip()[:1000] or None,
-        color=discord.Color.dark_red(),
-    )
-
-    # Discord embed budget — leave some headroom for title/footer/desc.
     EMBED_BUDGET = 5500
     FIELD_CAP = 25
-    desc_len = len(embed.description or "")
-    used_chars = desc_len + len(embed.title or "")
+
+    embeds: list[discord.Embed] = []
+    used_chars: list[int] = []
+
+    def _new_embed() -> discord.Embed:
+        page = len(embeds) + 1
+        suffix = "" if page == 1 else " (continued)"
+        e = discord.Embed(
+            title=f"⚔️ {title}{suffix}",
+            color=discord.Color.dark_red(),
+        )
+        embeds.append(e)
+        used_chars.append(len(e.title or ""))
+        return e
+
+    embed = _new_embed()
+
+    def _add_logical_field(name: str, value: str, *, inline: bool = False) -> None:
+        nonlocal embed
+        chunks = _chunk_lines_for_field(str(value or "").splitlines() or ["—"])
+        for idx, chunk in enumerate(chunks, start=1):
+            label = name if len(chunks) == 1 else f"{name} ({idx}/{len(chunks)})"
+            field_cost = len(label) + len(chunk)
+            if (
+                len(embed.fields) >= FIELD_CAP
+                or used_chars[-1] + field_cost > EMBED_BUDGET
+            ):
+                embed = _new_embed()
+            embed.add_field(name=label[:256], value=chunk, inline=inline)
+            used_chars[-1] += field_cost
+
+    desc = (comp.get("description") or "").strip()
+    if desc:
+        _add_logical_field("Overview", desc, inline=False)
 
     # Group by build_type, keep tank → healer → dps → support → (unset) order.
     groups: dict[str, list[dict]] = {bt: [] for bt in BUILD_TYPES}
@@ -196,13 +222,10 @@ def _build_comp_embed(comp: dict, slots: list[dict]) -> discord.Embed:
         "tank": "🛡️ Tanks", "healer": "✨ Healers",
         "dps": "⚔️ DPS", "support": "🔧 Support", "other": "❔ Unassigned",
     }
-    truncated = False
     for key in section_order:
         rows = groups.get(key) or []
         if not rows:
             continue
-        if truncated:
-            break
         lines = [_slot_summary_line(s) for s in rows]
         chunks = _chunk_lines_for_field(lines, limit=1024)
         for idx, chunk in enumerate(chunks):
@@ -211,25 +234,23 @@ def _build_comp_embed(comp: dict, slots: list[dict]) -> discord.Embed:
                 if idx == 0
                 else f"{section_titles[key]} (cont.)"
             )
-            field_cost = len(label) + len(chunk)
-            if (
-                len(embed.fields) >= FIELD_CAP
-                or used_chars + field_cost > EMBED_BUDGET
-            ):
-                truncated = True
-                break
-            embed.add_field(name=label, value=chunk, inline=False)
-            used_chars += field_cost
+            _add_logical_field(label, chunk, inline=False)
 
     required_count = sum(1 for s in slots if int(s.get("required") or 1))
-    embed.set_footer(
-        text=(
+    for idx, e in enumerate(embeds, start=1):
+        footer = (
             f"Comp #{comp['id']} • {len(slots)} slots total • "
             f"{required_count} required"
-            + (" • truncated — embed limit reached" if truncated else "")
-        ),
-    )
-    return embed
+        )
+        if len(embeds) > 1:
+            footer += f" • page {idx}/{len(embeds)}"
+        e.set_footer(text=footer)
+    return embeds
+
+
+def _build_comp_embed(comp: dict, slots: list[dict]) -> discord.Embed:
+    """Compatibility wrapper for callers that only need the first page."""
+    return _build_comp_embeds(comp, slots)[0]
 
 
 class CreateCompModal(discord.ui.Modal, title="Create comp"):
@@ -445,8 +466,10 @@ class Comp(commands.Cog):
             )
             return
         slots = self.bot.db.list_comp_slots(int(comp["id"]))
-        embed = _build_comp_embed(comp, slots)
-        await interaction.response.send_message(embed=embed)
+        embeds = _build_comp_embeds(comp, slots)
+        await interaction.response.send_message(embeds=embeds[:10])
+        for start in range(10, len(embeds), 10):
+            await interaction.followup.send(embeds=embeds[start:start + 10])
 
     # ── /comp add-slot ──────────────────────────────────────────────────────
     @comp.command(name="add-slot", description="Add a slot to a comp.")

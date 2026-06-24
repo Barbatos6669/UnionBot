@@ -29,7 +29,7 @@ REGION_URLS = {
 }
 
 # AODP politely requests a User-Agent so they can identify clients on abuse.
-_USER_AGENT = "UnionBot/1.0 (+https://github.com/ExampleOfficer/GuildOPs)"
+_USER_AGENT = "UnionBot/1.0 (+https://github.com/YOUR-ORG/UnionBot)"
 
 # Royal cities + Caerleon + Brecilien. AODP also accepts black-market and
 # portal towns but those are rarely useful for arbitrage.

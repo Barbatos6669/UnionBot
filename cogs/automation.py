@@ -34,6 +34,7 @@ Config keys consumed:
     automation_inactivity_threshold_days   (int, default 21)
     automation_kill_milestone_threshold    (int, default 1_000_000)
     automation_voice_attendance_min_pct    (int, default 50)
+    automation_event_reconcile_grace_minutes (int, default 30; no-VC fallback)
     home_guild_name                        (set elsewhere)
 """
 from __future__ import annotations
@@ -48,7 +49,7 @@ import discord
 from discord.ext import commands, tasks
 
 from debug import info_log, error_log
-from config import HOME_GUILD_NAME, HOME_GUILD_ROLE_NAME, LIFECYCLE_ROLES, STAFF_ROLES
+from config import LIFECYCLE_ROLES, STAFF_ROLES
 from utils import error_embed, info_embed, success_embed
 
 
@@ -79,9 +80,16 @@ from cogs._automation_dashboard import (
     _build_officer_dashboard_embed,
     OfficerDashboardView,
 )
+from cogs._event_reports import (
+    batch_embeds_for_send,
+    build_event_report_embed,
+    build_event_report_view,
+    register_persistent_event_report_views,
+)
 
 
 _HOF_QUEUE_TABLE = "hall_of_fame_digest_queue"
+_DEFAULT_EVENT_RECONCILE_GRACE_MIN = 30
 
 
 def _ensure_hof_queue(db) -> None:
@@ -424,16 +432,16 @@ def _collect_vc_inactive_targets(
     days: int,
     min_minutes: int,
 ) -> list[dict]:
-    """Current home-guild members below the voice threshold.
+    """Current TU members below the voice threshold.
 
     This intentionally checks current Discord membership and the current
-    configured home-guild role, because stale Albion/API profile data can outlive a
+    HomeGuild role, because stale Albion/API profile data can outlive a
     member leaving the server.
     """
-    home = (bot.db.get_config("home_guild_name") or HOME_GUILD_NAME).strip()
+    home = (bot.db.get_config("home_guild_name") or "HomeGuild").strip()
     since_date = (_now().date() - datetime.timedelta(days=int(days))).isoformat()
     min_seconds = max(0, int(min_minutes)) * 60
-    tu_role = discord.utils.get(guild.roles, name=HOME_GUILD_ROLE_NAME)
+    tu_role = discord.utils.get(guild.roles, name="HomeGuild")
     staff_names = set(STAFF_ROLES)
     targets: list[dict] = []
 
@@ -500,7 +508,7 @@ def _build_vc_inactive_embeds(
     if not targets:
         return [info_embed(
             "VC-inactivity preview",
-            f"No active home-guild members are under **{min_minutes}m** voice time in the last **{days}d**.",
+            f"No active TU members are under **{min_minutes}m** voice time in the last **{days}d**.",
         )]
 
     pages: list[list[str]] = []
@@ -520,7 +528,7 @@ def _build_vc_inactive_embeds(
         pages.append(current)
 
     action = (
-        f"Applied: moved listed members to Inactive and removed {HOME_GUILD_ROLE_NAME}."
+        "Applied: moved listed members to Inactive and removed HomeGuild."
         if applied else
         "Dry run only. Use /automation vc-inactive-sweep apply:true to apply."
     )
@@ -573,7 +581,7 @@ async def _apply_vc_inactive_targets(
     min_minutes: int,
     actor: discord.abc.User,
 ) -> tuple[list[dict], list[str]]:
-    tu_role = discord.utils.get(guild.roles, name=HOME_GUILD_ROLE_NAME)
+    tu_role = discord.utils.get(guild.roles, name="HomeGuild")
     inactive_role = discord.utils.get(guild.roles, name="Inactive")
     lifecycle_names = set(LIFECYCLE_ROLES)
     applied: list[dict] = []
@@ -682,8 +690,8 @@ async def _run_unverified_kicks(bot: Bot) -> None:
                     f"your account stayed Unverified for {age} days. "
                     "You're welcome to rejoin and complete verification."
                 )
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                error_log(f"Unverified-kick DM failed for {member}: {exc!r}")
             try:
                 await member.kick(reason=reason)
                 kicked.append(
@@ -733,6 +741,204 @@ async def _run_unverified_kicks(bot: Bot) -> None:
         )
     except (discord.Forbidden, discord.HTTPException) as exc:
         error_log(f"unverified-kick summary post failed: {exc!r}")
+
+
+def _collect_registration_cleanup_targets(
+    guild: discord.Guild,
+    *,
+    min_days: int = 0,
+) -> list[tuple[discord.Member, int]]:
+    """Current Unverified members eligible for manual registration cleanup."""
+    role = discord.utils.get(guild.roles, name="Unverified")
+    if role is None:
+        return []
+    min_days = max(0, int(min_days or 0))
+    targets: list[tuple[discord.Member, int]] = []
+    for member in role.members:
+        if member.bot:
+            continue
+        if member == guild.owner:
+            continue
+        perms = member.guild_permissions
+        if perms.manage_guild or perms.administrator:
+            continue
+        age = _unverified_age_days(member)
+        if age < min_days:
+            continue
+        targets.append((member, age))
+    targets.sort(key=lambda t: t[1], reverse=True)
+    return targets
+
+
+def _build_registration_cleanup_embed(
+    bot: Bot,
+    guild: discord.Guild,
+) -> discord.Embed:
+    """Build the officer task embed attached to registration-cleanup buttons."""
+    days = _get_int_config(
+        bot.db, "automation_unverified_kick_days",
+        _DEFAULT_UNVERIFIED_KICK_DAYS,
+    )
+    targets = _collect_registration_cleanup_targets(guild, min_days=0)
+    kick_targets = _collect_registration_cleanup_targets(guild, min_days=days)
+    register_link = _registration_channel_mention(guild, bot)
+
+    sample = [
+        f"• {member.mention} (`{member}`) — {age}d"
+        for member, age in targets[:15]
+    ]
+    if len(targets) > 15:
+        sample.append(f"…and {len(targets) - 15} more.")
+    sample_text = "\n".join(sample) if sample else "No current Unverified members found."
+
+    embed = discord.Embed(
+        title="🛡️ Officer Task — Registration Cleanup",
+        description=(
+            "Choose an action below for members who still have the **Unverified** role.\n\n"
+            f"Registration channel: {register_link}"
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Current status",
+        value=(
+            f"Unverified members: **{len(targets)}**\n"
+            f"Kick-eligible at **{days}d+**: **{len(kick_targets)}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Button actions",
+        value=(
+            "🔄 **Refresh list** updates this task.\n"
+            "📝 **DM register reminder** messages every current Unverified member.\n"
+            f"🚪 **Kick eligible** starts a confirmation for Unverified members **{days}d+**."
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Current candidates", value=sample_text[:1024], inline=False)
+    embed.set_footer(text="Officer-only controls · Kick action requires confirmation")
+    return embed
+
+
+async def _run_registration_cleanup_nudges(
+    bot: Bot,
+    guild: discord.Guild,
+    *,
+    actor: discord.abc.User,
+) -> discord.Embed:
+    """DM registration reminders to all current Unverified members."""
+    targets = _collect_registration_cleanup_targets(guild, min_days=0)
+    if not targets:
+        return info_embed(
+            "No unverified members",
+            "No current Unverified members were found.",
+        )
+    register_link = _registration_channel_mention(guild, bot)
+    today_iso = _now().date().isoformat()
+    sent: list[str] = []
+    dm_closed: list[str] = []
+    failed: list[str] = []
+    for member, age in targets:
+        try:
+            await member.send(
+                f"Hey, please register in **{guild.name}** so staff can confirm "
+                f"you are an Albion Online player.\n\n"
+                f"Go to {register_link}, click **Register**, enter your Albion "
+                "character name, then upload the requested character screenshot. "
+                "The bot uses the Americas server automatically.\n\n"
+                "If you are stuck, reply in the server or ask an officer for help."
+            )
+            bot.db.mark_unverified_nudge_sent(str(member.id), today_iso)
+            sent.append(f"{member} — {age}d")
+        except discord.Forbidden:
+            bot.db.mark_unverified_nudge_sent(str(member.id), today_iso)
+            dm_closed.append(f"{member} — DMs closed")
+        except discord.HTTPException as exc:
+            failed.append(f"{member} — {exc}")
+        await asyncio.sleep(0.25)
+
+    lines: list[str] = []
+    if sent:
+        lines.append(f"**DM sent ({len(sent)}):**")
+        lines.extend(f"• {item}" for item in sent[:20])
+        if len(sent) > 20:
+            lines.append(f"…and {len(sent) - 20} more.")
+    if dm_closed:
+        lines.append(f"\n**DMs closed ({len(dm_closed)}):**")
+        lines.extend(f"• {item}" for item in dm_closed[:10])
+    if failed:
+        lines.append(f"\n**Failed ({len(failed)}):**")
+        lines.extend(f"• {item}" for item in failed[:10])
+    info_log(
+        f"{actor} ran manual registration nudges: "
+        f"sent={len(sent)} closed={len(dm_closed)} failed={len(failed)}."
+    )
+    embed = discord.Embed(
+        title=f"📝 Registration reminders — {len(sent)} DM(s) sent",
+        description="\n".join(lines) or "No messages were sent.",
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text=f"Triggered by {actor}")
+    return embed
+
+
+async def _run_registration_cleanup_kicks(
+    bot: Bot,
+    guild: discord.Guild,
+    *,
+    actor: discord.abc.User,
+    days: int,
+) -> discord.Embed:
+    """Kick current Unverified members over the configured threshold."""
+    days = max(1, int(days or _DEFAULT_UNVERIFIED_KICK_DAYS))
+    targets = _collect_registration_cleanup_targets(guild, min_days=days)
+    if not targets:
+        return info_embed(
+            "Nothing eligible to kick",
+            f"No Unverified members are past the **{days}d** kick threshold.",
+        )
+    kicked: list[str] = []
+    failed: list[str] = []
+    for member, age in targets:
+        reason = (
+            f"Officer registration cleanup by {actor}: "
+            f"Unverified for {age} days (threshold {days}d)."
+        )
+        try:
+            await member.send(
+                f"You have been removed from **{guild.name}** because your account "
+                f"stayed Unverified for {age} days. You may rejoin and complete "
+                "registration if you want access."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        try:
+            await member.kick(reason=reason)
+            kicked.append(f"{member} ({member.id}) — {age}d")
+            info_log(f"{actor} kicked unverified {member} ({member.id}) after {age}d.")
+        except discord.Forbidden:
+            failed.append(f"{member} — missing kick permissions / role hierarchy")
+        except discord.HTTPException as exc:
+            failed.append(f"{member} — {exc}")
+        await asyncio.sleep(0.25)
+
+    lines: list[str] = []
+    if kicked:
+        lines.append(f"**Kicked ({len(kicked)}):**")
+        lines.extend(f"• {item}" for item in kicked[:25])
+        if len(kicked) > 25:
+            lines.append(f"…and {len(kicked) - 25} more.")
+    if failed:
+        lines.append(f"\n**Failed ({len(failed)}):**")
+        lines.extend(f"• {item}" for item in failed[:10])
+    embed = discord.Embed(
+        title=f"🚪 Registration cleanup — {len(kicked)} kicked",
+        description="\n".join(lines) or "No members were kicked.",
+        color=discord.Color.dark_red(),
+    )
+    embed.set_footer(text=f"Threshold: {days}d · Triggered by {actor}")
+    return embed
 
 
 # ── Unverified registration nudge ───────────────────────────────────────────
@@ -819,7 +1025,8 @@ async def _run_unverified_nudges(bot: Bot) -> None:
                 await member.send(
                     f"Hey, quick reminder from **{guild.name}**: you're still **Unverified**.\n\n"
                     f"To unlock the server, head to {register_link} and click **Register**. "
-                    "The bot will ask for your Albion character/server, then a screenshot so staff can approve you.\n\n"
+                    "The bot will ask for your Albion character name, then a screenshot so staff can approve you. "
+                    "It uses the Americas server automatically.\n\n"
                     "If you're stuck, reply in the server or ping an officer and we'll help."
                 )
                 bot.db.mark_unverified_nudge_sent(str(member.id), today_iso)
@@ -949,7 +1156,7 @@ async def _run_auto_alumni(bot: Bot) -> None:
             continue
         old_role = discord.utils.get(target_guild.roles, name="Inactive")
         new_role = discord.utils.get(target_guild.roles, name="Alumni")
-        tu_role = discord.utils.get(target_guild.roles, name=HOME_GUILD_ROLE_NAME)
+        tu_role = discord.utils.get(target_guild.roles, name="HomeGuild")
         try:
             remove_roles = [
                 role for role in (old_role, tu_role)
@@ -1980,6 +2187,7 @@ from cogs._automation_views import (
     TreasuryPromptView,
     InactivitySweepView,
     PolicyDriftView,
+    RegistrationCleanupView,
     UnderfillAlertView,
 )
 
@@ -2323,6 +2531,8 @@ async def _snapshot_voice_attendance(bot: Bot) -> None:
 
     Per-event temporary VCs take priority. The older configured global voice
     channel remains as a fallback for events that do not have their own VC.
+    The DB keeps returning events past their scheduled end while their
+    temporary event VC is still alive, because Albion content often runs long.
     """
     active_events = bot.db.fetch_active_event_window()
     if not active_events:
@@ -2368,7 +2578,12 @@ async def _reconcile_finished_events(bot: Bot) -> None:
     threshold_pct = _get_int_config(
         bot.db, "automation_voice_attendance_min_pct", _DEFAULT_VOICE_PCT,
     )
-    events = bot.db.fetch_events_needing_reconciliation()
+    fallback_grace = _get_int_config(
+        bot.db,
+        "automation_event_reconcile_grace_minutes",
+        _DEFAULT_EVENT_RECONCILE_GRACE_MIN,
+    )
+    events = bot.db.fetch_events_needing_reconciliation(fallback_grace)
     if not events:
         return
 
@@ -2415,31 +2630,68 @@ async def _reconcile_finished_events(bot: Bot) -> None:
             f"(snapshot threshold {threshold})."
         )
 
-        # Post a brief summary to officer channel.
+        # Post the post-event analytics report to officer channel.
         channel = _channel(bot, "automation_officer_channel_id")
         if channel is not None and signups:
             try:
-                description = (
-                    f"**{ev.get('title')}**\n"
-                    f"Attended: **{attended_count}/{len(signups)}** "
-                    f"(≥{threshold_pct}% voice presence)."
-                )
-                if not_marked_count:
-                    description += (
-                        f"\nNot marked attended: **{not_marked_count}**. "
-                        "No penalty is applied."
+                ended_at = None
+                try:
+                    ended_at = datetime.datetime.fromisoformat(
+                        str(ev.get("ends_at") or "").replace("Z", "+00:00")
                     )
-                embed = info_embed(
-                    f"✅  Event #{event_id} reconciled",
-                    description,
+                    if ended_at.tzinfo is None:
+                        ended_at = ended_at.replace(tzinfo=datetime.timezone.utc)
+                except (TypeError, ValueError):
+                    ended_at = None
+                recent = (
+                    ended_at is None
+                    or datetime.datetime.now(datetime.timezone.utc) - ended_at
+                    <= datetime.timedelta(hours=24)
                 )
-                kwargs: dict = {
-                    "embed": embed,
-                    "allowed_mentions": discord.AllowedMentions.none(),
-                }
-                await channel.send(**kwargs)
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+                graph_files: list[discord.File] = []
+                extra_embeds: list[discord.Embed] = []
+                embed = await build_event_report_embed(
+                    bot,
+                    ev,
+                    threshold_pct=threshold_pct,
+                    fetch_killboard=recent,
+                    create_regear_tasks=recent,
+                    include_graph=True,
+                    graph_files=graph_files,
+                    extra_embeds=extra_embeds,
+                )
+                report_embeds = [embed, *extra_embeds]
+                for idx, embed_batch in enumerate(batch_embeds_for_send(report_embeds)):
+                    kwargs: dict = {
+                        "embeds": embed_batch,
+                        "allowed_mentions": discord.AllowedMentions.none(),
+                    }
+                    if idx == 0:
+                        kwargs["view"] = build_event_report_view(event_id)
+                        if graph_files:
+                            kwargs["file"] = graph_files[0]
+                    await channel.send(**kwargs)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                error_log(f"event report post failed for #{event_id}: {exc!r}")
+            except Exception as exc:  # noqa: BLE001
+                error_log(f"event report post failed for #{event_id}: {exc!r}")
+                try:
+                    description = (
+                        f"**{ev.get('title')}**\n"
+                        f"Attended: **{attended_count}/{len(signups)}** "
+                        f"(>={threshold_pct}% voice presence)."
+                    )
+                    if not_marked_count:
+                        description += (
+                            f"\nNot marked attended: **{not_marked_count}**. "
+                            "No penalty is applied."
+                        )
+                    await channel.send(
+                        embed=info_embed(f"Event #{event_id} reconciled", description),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
 
 
 # ── Cog ─────────────────────────────────────────────────────────────────────
@@ -2458,6 +2710,8 @@ class Automation(commands.Cog):
         # Officer-action views on daily alerts (inactivity, policy drift).
         self.bot.add_view(InactivitySweepView())
         self.bot.add_view(PolicyDriftView())
+        self.bot.add_view(RegistrationCleanupView())
+        register_persistent_event_report_views(self.bot)
         # Add slash commands group.
         self.bot.tree.add_command(AutomationGroup(self.bot))
 
@@ -3169,7 +3423,7 @@ class AutomationGroup(
 
     @app_commands.command(
         name="vc-inactive-preview",
-        description="Show current home-guild members below the voice activity threshold.",
+        description="Show current TU members below the voice activity threshold.",
     )
     @app_commands.describe(
         days="Look back this many days of voice activity.",
@@ -3214,7 +3468,7 @@ class AutomationGroup(
         description="Dry-run or apply VC inactivity demotion to Inactive.",
     )
     @app_commands.describe(
-        apply=f"False = preview only. True = remove {HOME_GUILD_ROLE_NAME} and apply Inactive.",
+        apply="False = preview only. True = remove HomeGuild and apply Inactive.",
         days="Look back this many days of voice activity.",
         min_minutes="Minimum voice minutes required in that window.",
     )

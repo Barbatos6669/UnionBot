@@ -16,7 +16,6 @@ from cogs._bounties_config import fmt_silver
 from cogs._openai_moderation import DEFAULT_MODERATION_MODEL, moderate_text
 from cogs._typing import Bot
 from cogs.openai_moderation import _is_albion_game_violence
-from config import HOME_ALLIANCE_TAG, HOME_GUILD_NAME, HOME_GUILD_NICK_TAG
 from debug import error_log, info_log
 from utils import error_embed, info_embed, is_officer, is_unionbot_handled, mark_unionbot_handled, success_embed
 
@@ -120,7 +119,8 @@ HELP_INTENT_RE = re.compile(
     r"register|registration|verify|verified|lfg|event|timer|claim|signup|sign up|"
     r"role|roles|ping|pings|channel|channels|content|voice|vc|discord|join|invite|guild|board|button|"
     r"apply|application|regear|loot|"
-    r"bounty|market|arbitrage|route|roads|sso|faction|albion|build|comp|ip|spec"
+    r"bounty|market|arbitrage|route|roads|sso|faction|albion|build|comp|ip|spec|"
+    r"disarray|dissary|disarry|disaray|zerg"
     r")\b",
     re.IGNORECASE,
 )
@@ -183,8 +183,17 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "dung": {"dungeon"},
     "dungion": {"dungeon"},
     "dungeonm": {"dungeon"},
+    "deadwater": {"eel", "fish", "fishing", "rare", "tier", "t7"},
+    "deadriver": {"deadwater", "eel", "fish", "fishing", "rare", "tier", "t7"},
+    "disarray": {"zerg", "zvz", "large", "group", "debuff"},
+    "disarry": {"disarray", "zerg", "zvz", "large", "group", "debuff"},
+    "disaray": {"disarray", "zerg", "zvz", "large", "group", "debuff"},
+    "dissary": {"disarray", "zerg", "zvz", "large", "group", "debuff"},
+    "eel": {"fish", "fishing", "rare", "deadwater"},
     "famefarm": {"fame", "farm", "dungeon", "static"},
     "ff": {"fame", "farm", "dungeon", "static"},
+    "fish": {"fishing", "gathering", "resource"},
+    "fishing": {"fish", "gathering", "resource", "rod", "bait"},
     "focusfire": {"focus", "fire", "resilience", "kill", "window", "target"},
     "fw": {"faction", "warfare"},
     "gank": {"ganking", "catch", "dismount"},
@@ -196,32 +205,40 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "hideout": {"ho", "logistics"},
     "ho": {"hideout", "logistics"},
     "hauling": {"transport", "market", "route", "risk"},
+    "income": {"silver", "money", "economy", "market", "profit"},
     "ip": {"item", "power", "spec", "gear"},
+    "kills": {"pvp", "kill", "combat", "fight"},
+    "loot": {"death", "drop", "gear", "regear", "split"},
     "lp": {"learning", "points", "progression"},
     "killed": {"death", "die", "dead", "loot", "drop"},
-    "loot": {"death", "drop", "gear"},
     "martlock": {"faction", "warfare", "outpost"},
     "mist": {"mists", "solo", "duo"},
+    "money": {"silver", "economy", "market", "profit", "transport"},
     "oc": {"overcharge", "overcharged", "siphoned", "energy", "gear"},
     "overcharge": {"oc", "overcharged", "siphoned", "energy", "gear"},
     "overcharged": {"oc", "overcharge", "siphoned", "energy", "gear"},
     "peel": {"protect", "defensive", "support", "kite"},
     "purge": {"remove", "buff", "defensive", "clap"},
     "rat": {"ratting", "opportunistic", "escape"},
+    "regear": {"death", "event", "attendance", "voice", "loot", "loss"},
     "refine": {"refining", "economy", "focus"},
     "refiner": {"refining", "economy", "focus"},
     "redzone": {"red", "zone", "rz", "lethal"},
     "roads": {"avalonian", "ava", "route", "portal"},
     "rrr": {"resource", "return", "rate", "crafting", "refining", "focus"},
     "rz": {"red", "zone", "redzone", "lethal"},
+    "season": {"points", "objective", "guild", "warfare", "outpost", "castle", "hideout"},
+    "silver": {"money", "economy", "market", "profit", "transport"},
     "shotcaller": {"caller", "calling"},
     "softcap": {"soft", "cap", "ip", "item", "power"},
     "split": {"loot", "payout", "silver", "party"},
     "smallscale": {"small", "scale", "pvp", "brawl"},
     "standard": {"banner", "faction", "battle", "objective"},
     "static": {"dungeon", "fame", "farm"},
+    "statics": {"static", "dungeon", "fame", "farm"},
     "tank": {"catch", "engage", "frontline"},
     "transporting": {"transport", "hauling", "market", "route", "risk"},
+    "whatrun": {"content", "group", "size", "available", "season", "points"},
     "zerg": {"zvz", "large", "group"},
     "zvz": {"zerg", "large", "group", "pvp"},
     "yellowzone": {"yellow", "zone", "yz", "knockdown"},
@@ -229,6 +246,7 @@ KNOWLEDGE_TOKEN_ALIASES = {
 }
 
 KNOWLEDGE_FILE_HINTS = {
+    "albion_member_field_manual.md": {"albion", "field", "manual", "common", "question", "questions", "what", "run", "today", "money", "silver", "fame", "pvp", "pve", "death", "die", "black", "zone", "red", "zone", "gear", "ip", "spec", "build", "regear", "event", "voice", "attendance", "season", "points", "gank", "transport", "faction"},
     "albion_master_reference.md": {"albion", "master", "overview", "wiki", "official", "content", "combat", "economy", "guild", "beginner", "reference", "sources"},
     "albion_basics.md": {"albion", "basic", "beginner", "fame", "ip", "spec", "gear", "tier", "death"},
     "albion_combat_mechanics_deep.md": {"combat", "mechanic", "mechanics", "focus", "fire", "resilience", "penetration", "aoe", "escalation", "cc", "crowd", "control", "disarray", "cluster", "queue", "kill", "window", "melt", "clap", "purge", "pierce"},
@@ -238,6 +256,7 @@ KNOWLEDGE_FILE_HINTS = {
     "albion_faction_warfare_playbook.md": {"faction", "fw", "martlock", "outpost", "bandit", "enlist", "cap"},
     "albion_faction_warfare_realm_divided.md": {"faction", "fw", "martlock", "realm", "divided", "province", "fortress", "standard", "banner", "bandit"},
     "albion_economy_professions_deep.md": {"economy", "market", "marketplace", "black", "buy", "sell", "order", "arbitrage", "gather", "gathering", "resource", "refine", "refining", "craft", "crafting", "focus", "return", "rrr", "island", "journal", "laborer", "transport", "haul", "hauling"},
+    "albion_fishing.md": {"fishing", "fish", "fisherman", "rod", "bait", "water", "freshwater", "saltwater", "rare", "eel", "deadwater", "deadriver", "tier", "t7", "level", "catch", "biome", "forest", "swamp", "highland"},
     "albion_gathering_transport_survival.md": {"gather", "gathering", "transport", "hauling", "scout", "mount", "escape"},
     "albion_consumables_mounts_and_gear_checks.md": {"food", "potion", "mount", "cape", "overcharge", "gear", "check"},
     "albion_economy_crafting_refining.md": {"economy", "craft", "crafting", "refine", "refining", "focus", "journal", "laborer"},
@@ -269,7 +288,7 @@ KNOWLEDGE_FILE_HINTS = {
     "albion_roads_portal_scouting_reference.md": {"roads", "avalonian", "ava", "sso", "route", "portal", "ttl", "scout", "charges"},
     "albion_weapons_roles_and_builds.md": {"weapon", "weapons", "build", "role", "tank", "healer", "support", "dps"},
     "albion_world_content_reference.md": {"content", "world", "open", "dungeon", "dungeons", "solo", "group", "static", "randomized", "corrupted", "hellgate", "mists", "knightfall", "abbey", "brecilien", "roads", "avalon", "avalonian", "depths", "abyssal", "arena", "crystal", "expedition", "hce", "world", "boss"},
-    "albion_zvz_small_scale_basics.md": {"zvz", "zerg", "smallscale", "small", "scale", "brawl", "kite", "bomb"},
+    "albion_zvz_small_scale_basics.md": {"zvz", "zerg", "smallscale", "small", "scale", "brawl", "kite", "bomb", "disarray", "debuff"},
     "albion_zone_risk_and_death.md": {"zone", "death", "full", "loot", "red", "black", "yellow", "blue", "rz", "bz", "yz"},
     "albion_zone_transport_decision_tree.md": {"zone", "transport", "hauling", "risk", "safe", "red", "black", "route", "caerleon"},
     "albion_content_types.md": {"content", "gank", "ganking", "zvz", "hellgate", "mist", "dungeon", "gathering"},
@@ -283,11 +302,11 @@ KNOWLEDGE_FILE_HINTS = {
     "registration.md": {"register", "registration", "verify", "verified", "unverified", "guest", "screenshot"},
     "roles_channels.md": {"role", "roles", "channel", "channels", "ping", "permission", "visibility"},
     "server_channel_directory.md": {"discord", "server", "channel", "channels", "category", "categories", "directory", "where", "post", "route", "routing", "map", "layout", "start", "union", "board", "hall", "content", "ops", "martlock", "faction", "alliance", "guest", "voice", "lfg", "register", "rules"},
-    "server_overview.md": {"server", "unionbot", "guild", "union", "help", "overview"},
+    "server_overview.md": {"server", "unionbot", "travelers", "union", "help", "overview"},
     "sso_routes_roads.md": {"sso", "route", "routes", "road", "roads", "portal", "scout", "scouting", "ttl"},
     "unionbot_stand_in_officer_playbook.md": {"unionbot", "ai", "officer", "standin", "stand", "fallback", "help", "unanswered"},
     "unionbot_answer_playbook.md": {"unionbot", "answer", "playbook", "style", "examples", "short", "clarify", "focus", "fire", "oc", "overcharge", "disarray", "buy", "order", "sell", "register", "lfg", "black", "zone", "death", "regear", "faction", "roads", "sso", "market", "bounty", "new", "player"},
-    "union_guild_operations.md": {"union", "guild", "operations", "channel", "channels", "role", "roles", "guest", "alliance", "homeguild", "lfg", "register", "registration", "faction", "martlock", "sso", "market", "bounty", "regear"},
+    "union_guild_operations.md": {"union", "guild", "operations", "channel", "channels", "role", "roles", "guest", "alliance", "travelersunion", "lfg", "register", "registration", "faction", "martlock", "sso", "market", "bounty", "regear"},
 }
 
 
@@ -371,6 +390,20 @@ def _knowledge_phrases(value: str) -> set[str]:
         "roads of avalon",
         "faction warfare",
         "bandit assault",
+        "what should i do",
+        "what should we do",
+        "what should i run",
+        "what should we run",
+        "make money",
+        "making money",
+        "season points",
+        "event voice",
+        "join voice",
+        "gear check",
+        "minimum ip",
+        "static dungeon",
+        "group dungeon",
+        "black zone",
         "corrupted dungeon",
         "hellgate",
         "knightfall abbey",
@@ -534,7 +567,7 @@ def _sanitize_answer(value: str) -> str:
         return text
     text = text.replace("\u2060", "")
     opener_patterns = (
-        r"^\s*(?:hey[,!\s]*)?(?:tu|home guild)\s+here[.!,:;\-\s]*",
+        r"^\s*(?:hey[,!\s]*)?(?:tu|travelers union)\s+here[.!,:;\-\s]*",
         r"^\s*(?:hey[,!\s]*)?(?:union\s*bot|unionbot|barbatos\s*bot|barbatosbot)\s+here[.!,:;\-\s]*",
         r"^\s*i(?:'|’)?m\s+a\s+bot\s*,?\s*(?:but\s*)?",
         r"^\s*i\s+am\s+a\s+bot\s*,?\s*(?:but\s*)?",
@@ -592,6 +625,13 @@ def _quick_albion_answer(question: str) -> str | None:
     def has(*phrases: str) -> bool:
         return any(phrase in text for phrase in phrases)
 
+    if has("deadwater eel", "deadriver eel") or ("eel" in words and {"catch", "fish", "fishing", "level", "tier", "t7"} & words):
+        return (
+            "You probably mean **Deadwater Eel**. It is a **T7 rare freshwater fish**. Fish for it in **T7-T8 freshwater** "
+            "in forest, swamp, or highland biomes. "
+            "Bring a T7-capable fishing setup if you can: rod, bait, fishing gear, seaweed salad, and an escape weapon/mount. "
+            "Bait speeds bites, but it does not force the eel; rare fish are still RNG."
+        )
     if has("focus fire", "focusfire"):
         return (
             "Focus fire is Albion's anti-dogpile mechanic. When a bunch of players hit the same target in PvP, "
@@ -609,11 +649,13 @@ def _quick_albion_answer(question: str) -> str | None:
             "OC means overcharge. You spend Siphoned Energy to temporarily boost equipped gear IP for a fight, then each "
             "overcharged item has a chance to break when the overcharge ends. Use it for serious timers, not throwaway farming."
         )
-    if "disarray" in words:
+    if {"disarray", "dissary", "disarry", "disaray"} & words:
         return (
-            "Disarray is Albion's large-group debuff. As a side brings more players into a fight, the game applies scaling "
-            "combat penalties so giant blobs are less efficient. It does not make numbers useless, but it rewards tighter comps "
-            "and cleaner execution."
+            "Disarray is Albion's anti-zerg debuff for large Outlands/ZvZ fights. Big sides get scaling penalties, mainly to "
+            "damage and CC pressure against lower-Disarray enemies, so raw numbers have diminishing returns. It does not mean "
+            "a big group is useless; it means oversized groups need cleaner parties, better engages, and discipline. Battle "
+            "mounts and some Outlands home mechanics can add extra Disarray pressure, so callers should verify current patch "
+            "values before serious CTAs."
         )
     if "bubble" in words:
         return (
@@ -787,13 +829,14 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
     if words & {"register", "registration", "verify", "verified", "sync", "synced"}:
         if words & {"screenshot", "photo", "image", "picture"} or has("outside the flow"):
             return (
-                f"Start in {registration}. Click **Register · Registrarse · Cadastrar-se** first, enter your Albion name/server, "
+                f"Start in {registration}. Click **Register · Registrarse · Cadastrar-se** first, enter your Albion character name, "
                 "then upload the character-screen screenshot in that same channel when the bot asks. "
                 "If you already posted the image early, just run the button flow again so the bot can attach the screenshot to your registration."
             )
         return (
-            f"Go to {registration}, click **Register · Registrarse · Cadastrar-se**, enter your exact Albion character name and server, "
+            f"Go to {registration}, click **Register · Registrarse · Cadastrar-se**, enter your exact Albion character name, "
             "then upload a character-screen screenshot in that channel within 5 minutes. "
+            "The bot checks the Americas server automatically. "
             "If Albion's API cannot confirm your guild/alliance, an officer can still review you as Guest/manual registration."
         )
 
@@ -803,10 +846,10 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
             f"After that, register in {registration}, pick pings in {content_roles}, and use {event_board} for planned content."
         )
 
-    if ("apply" in words or "application" in words or has("join guild", "join guild", "join tu")) and "staff" not in words:
+    if ("apply" in words or "application" in words or has("join guild", "join travelers", "join tu")) and "staff" not in words:
         return (
-            f"Use {application} if you want to apply to join {HOME_GUILD_NAME} in-game. "
-            "Alliance members and Guests do not need a guild application unless they are actually transferring into home guild."
+            f"Use {application} if you want to apply to join HomeGuild in-game. "
+            "Alliance members and Guests do not need a guild application unless they are actually transferring into TU."
         )
 
     if has("staff application", "apply for staff") or ({"staff", "officer", "shotcaller"} & words and {"apply", "application"} & words):
@@ -1365,9 +1408,9 @@ class AIAssistant(commands.Cog):
             if raw:
                 channel_bits.append(f"{label}: <#{raw}>")
 
-        home_guild = (db.get_config("home_guild_name") or HOME_GUILD_NAME).strip()
-        home_tag = (db.get_config("member_nickname_home_tag") or HOME_GUILD_NICK_TAG).strip()
-        alliance_tag = (db.get_config("home_alliance_tag") or HOME_ALLIANCE_TAG).strip()
+        home_guild = (db.get_config("home_guild_name") or "HomeGuild").strip()
+        home_tag = (db.get_config("member_nickname_home_tag") or "TU").strip()
+        alliance_tag = (db.get_config("home_alliance_tag") or "UOT").strip()
 
         channels = ", ".join(channel_bits) if channel_bits else "no key channels configured"
         registration_channel = db.get_config("registration_channel_id")
@@ -1384,7 +1427,8 @@ class AIAssistant(commands.Cog):
             "Treat these workflows as source of truth. If asked for details not listed here, say you are not sure.\n"
             "Registration flow:\n"
             f"- Go to {registration_link}, click the button labeled 'Register · Registrarse · Cadastrar-se', "
-            "enter Albion character name and server, then upload a character-screen screenshot in that same channel within 5 minutes. "
+            "enter Albion character name, then upload a character-screen screenshot in that same channel within 5 minutes. "
+            "The registration lookup uses the Americas server automatically. "
             "An officer reviews it. Registration verifies Albion identity; it is not limited to home-guild members. "
             "If Albion API cannot confirm guild/alliance, guest/manual review can still be used.\n"
             "LFG/event flow:\n"
@@ -1554,7 +1598,7 @@ class AIAssistant(commands.Cog):
         guest_chat = mention(names=("guest-chat",))
         welcome = mention(config_keys=("welcome_channel_id",), names=("welcome",))
         guest_voice = mention(names=("join-to-create-guest", "guest-lounge"), kinds=("voice",))
-        voice = mention(names=("voice-lounge",), kinds=("voice",))
+        voice = mention(names=("travelers-lounge",), kinds=("voice",))
         content_voice = mention(names=("join-to-create-content",), kinds=("voice",))
         alliance_voice = mention(names=("join-to-create-alliance", "alliance-lounge"), kinds=("voice",))
         faction_voice = mention(names=("join-to-create-faction", "faction-war-lounge"), kinds=("voice",))
@@ -1573,7 +1617,7 @@ class AIAssistant(commands.Cog):
             f"- Content Chat: Ava/Roads {ava_roads}; Mists {mists}; Hellgates {hellgates}; Ganking {ganking}; Gathering {gathering}; Fame Farm {fame_farm}.",
             f"- Content Ops: planning {planning}; shotcalling SOP {sop}; comps/builds {comps}; regear requests {regear}; battle VODs {vods}.",
             f"- Resources: market/arbitrage {market}; bounties {bounty}; SSO/Roads routes {sso}; suggestions {suggestions}.",
-            f"- {alliance_tag} Alliance: info {alliance_info}; announcements {alliance_ann}; alliance events/LFG {alliance_events}; alliance chat {alliance_chat}.",
+            f"- UOT Alliance: info {alliance_info}; announcements {alliance_ann}; alliance events/LFG {alliance_events}; alliance chat {alliance_chat}.",
             f"- Martlock Faction: info {martlock_info}; faction LFG {martlock_lfg}; faction chat {faction_chat}; faction comps {martlock_comps}.",
             f"- Guests: guest info {guest_info}; guest chat {guest_chat}; welcome {welcome}; guest voice {guest_voice}.",
             f"- Voice: general voice {voice}; content join-to-create {content_voice}; alliance voice {alliance_voice}; faction voice {faction_voice}; vibe voice {vibe_voice}.",
@@ -1584,7 +1628,7 @@ class AIAssistant(commands.Cog):
             "- Faction Warfare LFG/events should use Martlock Faction LFG, not normal guild LFG, unless staff says otherwise.",
             "- Alliance-wide content should use alliance events/LFG; alliance requirements and recruitment info use alliance info.",
             "- Registration screenshots belong in the registration flow; if someone posts early, tell them to click Register again.",
-            f"- Guests are allowed for content/faction/diplomacy, but guild applications are only for joining {home_guild}.",
+            "- Guests are allowed for content/faction/diplomacy, but guild applications are only for joining HomeGuild.",
             "- Do not expose staff/private channel names to non-officers.",
         ]
         return _clip_block("\n".join(lines), limit=4200)
@@ -1631,7 +1675,7 @@ class AIAssistant(commands.Cog):
             "Unverified",
             "Synced",
             "NotSynced",
-            home_guild,
+            "HomeGuild",
             "Alliance",
             "Guest",
             "Recruit",
@@ -1743,7 +1787,7 @@ class AIAssistant(commands.Cog):
             "Content Chat": "topic channels for content chatter",
             "Content Ops": "planning, comps, regears, SOPs, VODs",
             "Martlock Faction": "Martlock faction warfare community and LFG",
-            f"{HOME_ALLIANCE_TAG} Alliance": "alliance info, announcements, events, chat, guild leaders",
+            "UOT Alliance": "alliance info, announcements, events, chat, guild leaders",
             "Guests": "guest info/chat and guest voice",
             "Resources": "market, bounties, SSO routes, patch/news, suggestions",
             "Guild Feed": "activity, kill, and death feeds",
@@ -1794,7 +1838,7 @@ class AIAssistant(commands.Cog):
             return cached
         now = datetime.datetime.now(datetime.timezone.utc)
         since = (now - datetime.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
-        home_guild = (self.bot.db.get_config("home_guild_name") or HOME_GUILD_NAME).strip()
+        home_guild = (self.bot.db.get_config("home_guild_name") or "HomeGuild").strip()
         try:
             if not self.bot.db.connection:
                 self.bot.db.connect()
@@ -1973,7 +2017,7 @@ class AIAssistant(commands.Cog):
             discord_members = int((cur.fetchone() or {"n": 0})["n"] or 0)
             cur.execute("SELECT COUNT(*) AS n FROM user_profiles WHERE albion_player_id IS NOT NULL")
             registered = int((cur.fetchone() or {"n": 0})["n"] or 0)
-            home_guild = (self.bot.db.get_config("home_guild_name") or HOME_GUILD_NAME).strip()
+            home_guild = (self.bot.db.get_config("home_guild_name") or "HomeGuild").strip()
             cur.execute(
                 "SELECT COUNT(*) AS n FROM user_profiles "
                 "WHERE albion_player_id IS NOT NULL AND LOWER(COALESCE(guild_name, '')) = LOWER(?)",
@@ -2271,7 +2315,7 @@ class AIAssistant(commands.Cog):
             if not profile or not profile.get("albion_player_id"):
                 return (
                     f"I do not see your Discord linked to an Albion character yet. "
-                    f"Start in {registration}, click **Register**, enter your exact character/server, then upload the character screen when asked."
+                    f"Start in {registration}, click **Register**, enter your exact Albion character name, then upload the character screen when asked."
                 )
             role_names = []
             if isinstance(user, discord.Member):
@@ -2475,7 +2519,7 @@ class AIAssistant(commands.Cog):
                 "flex": mention(names=("flex",)),
                 "hall_of_fame": mention("automation_hall_of_fame_channel_id", names=("hall-of-fame",)),
                 "union_lore": mention(names=("union-lore",)),
-                "voice_lounge": mention(names=("voice-lounge",), kinds=("voice",)),
+                "voice_lounge": mention(names=("travelers-lounge",), kinds=("voice",)),
                 "content_voice": mention(names=("join-to-create-content",), kinds=("voice",)),
             },
         )
@@ -2495,7 +2539,7 @@ class AIAssistant(commands.Cog):
         system = (
             "You are UnionBot's AI helper for an Albion Online guild Discord. "
             "Speak like a calm guild helper covering when officers are busy. "
-            "Do not open with 'Hey, home guild here', 'UnionBot here', or 'I'm a bot'. "
+            "Do not open with 'Hey, TU here', 'UnionBot here', or 'I'm a bot'. "
             "Answer the exact member question briefly and practically; do not add broad safety lectures unless the user asks for them. "
             "Use the provided server facts and recent context. "
             "When live operations facts conflict with general knowledge notes, trust the live operations facts. "

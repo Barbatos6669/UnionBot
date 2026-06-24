@@ -1,7 +1,7 @@
 """Tests for the comp embed building helpers, especially the chunking
 logic that prevents long sections from being silently truncated at the
 1024-char-per-field Discord limit."""
-from cogs.comp import _chunk_lines_for_field, _build_comp_embed
+from cogs.comp import _chunk_lines_for_field, _build_comp_embed, _build_comp_embeds
 
 
 def test_chunk_packs_under_limit_in_one_chunk():
@@ -24,12 +24,12 @@ def test_chunk_splits_when_total_exceeds_limit():
         assert ln in joined
 
 
-def test_chunk_truncates_a_single_too_long_line():
+def test_chunk_splits_a_single_too_long_line_without_truncating():
     huge = "x" * 2000
     chunks = _chunk_lines_for_field([huge], limit=1024)
-    assert len(chunks) == 1
-    assert len(chunks[0]) <= 1024
-    assert chunks[0].endswith("…")
+    assert len(chunks) == 2
+    assert all(len(chunk) <= 1024 for chunk in chunks)
+    assert "".join(chunks) == huge
 
 
 def test_chunk_empty_input():
@@ -77,12 +77,17 @@ def test_build_comp_embed_adds_cont_label_when_section_splits():
     assert any("(cont.)" in n for n in names)
 
 
-def test_build_comp_embed_truncates_only_when_real_limit_hit():
-    """500 slots is well past the 25-field / ~6000-char budget."""
+def test_build_comp_embed_pages_when_real_limit_hit():
+    """500 slots is well past one embed, so it should page instead."""
     comp = {"id": 3, "name": "Insane", "content_type": "ZvZ", "description": ""}
     slots = [_make_slot(i) for i in range(1, 501)]
-    embed = _build_comp_embed(comp, slots)
-    assert embed.footer is not None
-    assert "truncated" in (embed.footer.text or "")
-    # Embed must still be under Discord's hard 25-field cap.
-    assert len(embed.fields) <= 25
+    embeds = _build_comp_embeds(comp, slots)
+    assert len(embeds) > 1
+    for embed in embeds:
+        assert embed.footer is not None
+        assert "truncated" not in (embed.footer.text or "")
+        assert len(embed.fields) <= 25
+
+    body = "\n".join(field.value for embed in embeds for field in embed.fields)
+    assert "1. DPS 1" in body
+    assert "500. DPS 500" in body

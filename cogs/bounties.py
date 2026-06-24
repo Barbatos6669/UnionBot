@@ -587,10 +587,10 @@ class BountyRejectButton(
 class BountyConfirmPaidButton(
     discord.ui.DynamicItem[discord.ui.Button], template=PAID_TEMPLATE,
 ):
-    def __init__(self, bounty_id: int) -> None:
+    def __init__(self, bounty_id: int, *, label: str | None = None) -> None:
         self.bounty_id = bounty_id
         super().__init__(discord.ui.Button(
-            label="Confirm Paid", style=discord.ButtonStyle.success, emoji="💸",
+            label=label or f"Paid #{bounty_id}", style=discord.ButtonStyle.success, emoji="💸",
             custom_id=f"bounty:paid:{bounty_id}",
         ))
 
@@ -703,6 +703,10 @@ def register_persistent_bounty_views(bot: Bot) -> None:
 
 class Bounties(commands.Cog):
     KILL_BOUNTY_CFG_PREFIX = "bounty_enemy_target:"
+    PAYMENT_REMINDER_DEFAULT_HOURS = 24
+    PAYMENT_REMINDER_DEFAULT_DAYS = 14
+    PAYMENT_REMINDER_BUTTON_LIMIT = 5
+    PAYMENT_AUDIT_LIMIT = 25
 
     def __init__(self, bot: Bot) -> None:
         self.bot: Bot = bot
@@ -1224,6 +1228,84 @@ class Bounties(commands.Cog):
         if len(text) <= limit:
             return text
         return text[: max(0, limit - 3)].rstrip() + "..."
+
+    def _payment_config_int(
+        self,
+        key: str,
+        default: int,
+        *,
+        minimum: int = 1,
+        maximum: int = 365,
+    ) -> int:
+        db = self.bot.db  # type: ignore[attr-defined]
+        try:
+            value = int(db.get_config(key) or default)
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _fetch_unpaid_bounty_payouts(self, *, limit: int = PAYMENT_AUDIT_LIMIT) -> list[dict]:
+        db = self.bot.db  # type: ignore[attr-defined]
+        if not db.connection:
+            db.connect()
+        db.cursor.execute(
+            """
+            SELECT *
+              FROM bounties
+             WHERE status = ?
+               AND COALESCE(reward_points, 0) > 0
+               AND claimed_by IS NOT NULL
+               AND claimed_by != ''
+               AND (paid_at IS NULL OR paid_at = '')
+             ORDER BY datetime(COALESCE(completed_at, submitted_at, posted_at)) DESC,
+                      id DESC
+             LIMIT ?
+            """,
+            (STATUS_COMPLETED, max(1, int(limit))),
+        )
+        return [dict(r) for r in db.cursor.fetchall()]
+
+    def _bounty_payment_dt(self, bounty: dict) -> datetime.datetime | None:
+        return (
+            self._dt_from_iso(bounty.get("completed_at"))
+            or self._dt_from_iso(bounty.get("submitted_at"))
+            or self._dt_from_iso(bounty.get("posted_at"))
+        )
+
+    def _bounty_payment_line(self, bounty: dict) -> str:
+        approved_at = self._bounty_payment_dt(bounty)
+        when = f"<t:{int(approved_at.timestamp())}:R>" if approved_at else "unknown time"
+        title = self._clip(str(bounty.get("title") or "Bounty"), 70)
+        return (
+            f"`#{bounty['id']}` **{title}**\n"
+            f"Pay <@{bounty['claimed_by']}> 🪙 **{_fmt_silver(bounty.get('reward_points') or 0)}** "
+            f"· approved {when}"
+        )
+
+    def _build_payout_audit_embed(
+        self,
+        rows: list[dict],
+        *,
+        title: str,
+        hidden_recent: int = 0,
+        hidden_old: int = 0,
+        old_days: int | None = None,
+    ) -> discord.Embed:
+        lines = [
+            "These bounties were approved in the bot, but silver still has to be paid in Albion.",
+            "After paying the member in-game, press that bounty's **Paid #** button so the ledger stops chasing it.",
+        ]
+        if rows:
+            lines.append("")
+            lines.extend(self._bounty_payment_line(row) for row in rows)
+        if hidden_recent > 0:
+            lines.append(f"\n**{hidden_recent}** more recent payout(s) are hidden here. Run `/bounty payouts` for the full audit.")
+        if hidden_old > 0:
+            age_text = f" older than **{old_days} day(s)**" if old_days else ""
+            lines.append(f"\nOlder backlog hidden from auto reminders: **{hidden_old}** payout(s){age_text}. Run `/bounty payouts` to audit or clear them.")
+        embed = warning_embed(title, "\n\n".join(lines)[:3900])
+        embed.set_footer(text="Buttons settle the bot ledger only after the silver has been paid in-game.")
+        return embed
 
     def _sso_route_line(self, portals: list[str], proof: str) -> str:
         if portals:
@@ -2208,6 +2290,32 @@ class Bounties(commands.Cog):
         embed.set_footer(text="Use the buttons on each pending bounty post to approve or deny.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @bounty_group.command(name="payouts",
+        description="Officer: audit completed bounties still waiting on in-game silver.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def bounty_payouts(self, interaction: discord.Interaction) -> None:
+        rows = self._fetch_unpaid_bounty_payouts(limit=self.PAYMENT_AUDIT_LIMIT)
+        if not rows:
+            await interaction.response.send_message(
+                embed=success_embed(
+                    "Payout ledger clear",
+                    "No completed bounties are waiting for in-game silver confirmation.",
+                ),
+                ephemeral=True,
+            )
+            return
+        shown = rows[: self.PAYMENT_REMINDER_BUTTON_LIMIT]
+        embed = self._build_payout_audit_embed(
+            shown,
+            title="Bounty payout audit",
+            hidden_recent=max(0, len(rows) - len(shown)),
+        )
+        view = discord.ui.View(timeout=900)
+        for row in shown:
+            view.add_item(BountyConfirmPaidButton(int(row["id"])))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
     @bounty_group.command(name="mine", description="Bounties you have claimed.")
     async def bounty_mine(self, interaction: discord.Interaction) -> None:
         rows = _db_list_for_user(self.bot.db, str(interaction.user.id))  # type: ignore[attr-defined]
@@ -2470,10 +2578,12 @@ class Bounties(commands.Cog):
             db = self.bot.db  # type: ignore[attr-defined]
             if (db.get_config("bounty_payment_reminder_enabled") or "1") == "0":
                 return
-            try:
-                interval_hours = max(1, int(db.get_config("bounty_payment_reminder_hours") or 12))
-            except (TypeError, ValueError):
-                interval_hours = 12
+            interval_hours = self._payment_config_int(
+                "bounty_payment_reminder_hours",
+                self.PAYMENT_REMINDER_DEFAULT_HOURS,
+                minimum=1,
+                maximum=168,
+            )
             last_raw = db.get_config("bounty_payment_reminder_last_at")
             if last_raw:
                 try:
@@ -2486,24 +2596,33 @@ class Bounties(commands.Cog):
                 except (TypeError, ValueError):
                     pass
 
-            if not db.connection:
-                db.connect()
-            db.cursor.execute(
-                """
-                SELECT *
-                  FROM bounties
-                 WHERE status = ?
-                   AND COALESCE(reward_points, 0) > 0
-                   AND claimed_by IS NOT NULL
-                   AND claimed_by != ''
-                   AND (paid_at IS NULL OR paid_at = '')
-                 ORDER BY datetime(COALESCE(completed_at, posted_at)) ASC, id ASC
-                 LIMIT 10
-                """,
-                (STATUS_COMPLETED,),
+            all_rows = self._fetch_unpaid_bounty_payouts(limit=50)
+            if not all_rows:
+                return
+
+            recent_days = self._payment_config_int(
+                "bounty_payment_reminder_recent_days",
+                self.PAYMENT_REMINDER_DEFAULT_DAYS,
+                minimum=1,
+                maximum=365,
             )
-            rows = [dict(r) for r in db.cursor.fetchall()]
+            now = datetime.datetime.now(datetime.timezone.utc)
+            recent_cutoff = now - datetime.timedelta(days=recent_days)
+            recent_rows: list[dict] = []
+            stale_count = 0
+            for row in all_rows:
+                approved_at = self._bounty_payment_dt(row)
+                if approved_at is None or approved_at >= recent_cutoff:
+                    recent_rows.append(row)
+                else:
+                    stale_count += 1
+
+            rows = recent_rows[: self.PAYMENT_REMINDER_BUTTON_LIMIT]
             if not rows:
+                info_log(
+                    "bounty payment reminder skipped; "
+                    f"{stale_count} stale unpaid payout(s) older than {recent_days} day(s)."
+                )
                 return
 
             review_id = db.get_config(CFG_REVIEW_CHANNEL)
@@ -2516,21 +2635,15 @@ class Bounties(commands.Cog):
             if not isinstance(channel, discord.TextChannel):
                 return
 
-            lines = []
-            for row in rows:
-                completed = self._dt_from_iso(row.get("completed_at"))
-                when = f"<t:{int(completed.timestamp())}:R>" if completed else "unknown time"
-                lines.append(
-                    f"`#{row['id']}` **{self._clip(row.get('title') or 'Bounty', 70)}**\n"
-                    f"Pay <@{row['claimed_by']}> 🪙 **{_fmt_silver(row.get('reward_points') or 0)}** · approved {when}"
-                )
-            embed = warning_embed(
-                "Bounty payouts awaiting in-game payment",
-                "\n\n".join(lines)[:3900],
+            embed = self._build_payout_audit_embed(
+                rows,
+                title="Bounty payouts ready to settle",
+                hidden_recent=max(0, len(recent_rows) - len(rows)),
+                hidden_old=stale_count,
+                old_days=recent_days,
             )
-            embed.set_footer(text="Use the buttons after paying in-game so the ledger settles cleanly.")
             view = discord.ui.View(timeout=None)
-            for row in rows[:5]:
+            for row in rows:
                 view.add_item(BountyConfirmPaidButton(int(row["id"])))
             await channel.send(
                 embed=embed,
