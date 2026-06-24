@@ -46,6 +46,7 @@ from discord.ext import commands, tasks
 from debug import error_log, info_log
 from utils import error_embed, info_embed, success_embed, warning_embed
 from utils import is_officer as _is_officer
+from cogs._bounties_sso import SSORouteBoardView, SubmitSSORouteModal
 
 # Constants, formatters, parsers, and the per-bounty embed builder live in
 # ``_bounties_config`` (pure presentation, no DB). Schema + queries live in
@@ -210,50 +211,6 @@ class _RejectModal(discord.ui.Modal, title="Reject bounty"):
         await cog._do_reject(interaction, self.bounty_id, str(self.reason.value))
 
 
-def _normalize_sso_ttl(raw: str) -> tuple[str | None, str | None]:
-    """Return (normalized_ttl, error).
-
-    Accepts the same shapes the route parser understands, but validates early
-    so modal users get a helpful error instead of Discord's generic failure.
-    """
-    ttl_raw = (raw or "").strip().lower()
-    if not ttl_raw:
-        return None, None
-    for old, new in (
-        ("hours", "h"),
-        ("hour", "h"),
-        ("hrs", "h"),
-        ("hr", "h"),
-        ("minutes", "m"),
-        ("minute", "m"),
-        ("mins", "m"),
-        ("min", "m"),
-    ):
-        ttl_raw = ttl_raw.replace(old, new)
-    ttl_raw = ttl_raw.replace(" ", "")
-    if not ttl_raw:
-        return None, None
-    m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", ttl_raw)
-    if m and (m.group(1) or m.group(2)):
-        hours = int(m.group(1) or 0)
-        minutes = int(m.group(2) or 0)
-        total = hours * 60 + minutes
-    elif ttl_raw.isdigit():
-        total = int(ttl_raw)
-    else:
-        return None, "Use a TTL like `2h`, `90m`, or `1h30m`."
-    if total <= 0:
-        return None, "TTL must be longer than 0 minutes."
-    if total > 24 * 60:
-        return None, "TTL looks too long. Use the time left on the current connection, max 24h."
-    hours, minutes = divmod(total, 60)
-    if hours and minutes:
-        return f"{hours}h{minutes}m", None
-    if hours:
-        return f"{hours}h", None
-    return f"{minutes}m", None
-
-
 class _SubmitProofModal(discord.ui.Modal, title="Submit proof"):
     def __init__(self, bounty_id: int) -> None:
         super().__init__(timeout=None)
@@ -272,81 +229,6 @@ class _SubmitProofModal(discord.ui.Modal, title="Submit proof"):
             await interaction.response.send_message("Cog not loaded.", ephemeral=True)
             return
         await cog._do_submit(interaction, self.bounty_id, str(self.proof.value))
-
-
-class _SubmitSSORouteModal(discord.ui.Modal, title="Submit SSO Route"):
-    """Structured prompt for the daily Sentinel-SA portal-route bounty.
-
-    Collects up to 3 portal names plus an optional note and TTL, formats them
-    into the ``A > B > C > note: ... > ttl: ...`` proof string that
-    ``Bounties._parse_sso_route`` already understands, then routes to the
-    standard ``_do_submit`` flow so officers can approve as usual.
-    """
-
-    def __init__(self, bounty_id: int) -> None:
-        super().__init__(timeout=None)
-        self.bounty_id = bounty_id
-
-        self.portal1 = discord.ui.TextInput(
-            label="Portal 1 (required, scouted from HO)",
-            placeholder="e.g. Sentinel-SA-Odesos",
-            style=discord.TextStyle.short,
-            min_length=2, max_length=80, required=True,
-        )
-        self.portal2 = discord.ui.TextInput(
-            label="Portal 2 (optional)",
-            placeholder="e.g. Birchcops",
-            style=discord.TextStyle.short,
-            max_length=80, required=False,
-        )
-        self.portal3 = discord.ui.TextInput(
-            label="Portal 3 (optional)",
-            placeholder="e.g. Caerleon",
-            style=discord.TextStyle.short,
-            max_length=80, required=False,
-        )
-        self.note = discord.ui.TextInput(
-            label="Note (optional)",
-            placeholder="e.g. 30s walk from CL portal, watch for gankers",
-            style=discord.TextStyle.short,
-            max_length=200, required=False,
-        )
-        self.ttl = discord.ui.TextInput(
-            label="Time left on connection (optional)",
-            placeholder="e.g. 1h45m  or  90m  or  2h",
-            style=discord.TextStyle.short,
-            max_length=20, required=False,
-        )
-        for item in (self.portal1, self.portal2, self.portal3, self.note, self.ttl):
-            self.add_item(item)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        cog = _get_cog(interaction)
-        if not cog:
-            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
-            return
-        portals = [
-            str(self.portal1.value).strip(),
-            str(self.portal2.value).strip(),
-            str(self.portal3.value).strip(),
-        ]
-        portals = [p for p in portals if p]
-        parts: list[str] = list(portals)
-        note = str(self.note.value).strip()
-        if note:
-            parts.append(f"note: {note}")
-        ttl = str(self.ttl.value).strip()
-        normalized_ttl, ttl_error = _normalize_sso_ttl(ttl)
-        if ttl_error:
-            await interaction.response.send_message(
-                embed=error_embed("Check the route timer", ttl_error),
-                ephemeral=True,
-            )
-            return
-        if normalized_ttl:
-            parts.append(f"ttl: {normalized_ttl}")
-        proof = " > ".join(parts)
-        await cog._do_submit(interaction, self.bounty_id, proof)
 
 
 # ── Tiered bounty support ───────────────────────────────────────────────────
@@ -529,7 +411,7 @@ class BountySubmitButton(
             except Exception:
                 is_sso = False
         if is_sso:
-            await interaction.response.send_modal(_SubmitSSORouteModal(self.bounty_id))
+            await interaction.response.send_modal(SubmitSSORouteModal(self.bounty_id))
         else:
             await interaction.response.send_modal(_SubmitProofModal(self.bounty_id))
 
@@ -608,64 +490,6 @@ class BountyConfirmPaidButton(
         cog = _get_cog(interaction)
         if cog:
             await cog._do_confirm_paid(interaction, self.bounty_id)
-
-
-class SSORouteBoardView(discord.ui.View):
-    """Persistent action row for the single SSO route board message."""
-
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Add / Update Route",
-        style=discord.ButtonStyle.primary,
-        emoji="🐎",
-        custom_id="sso_routes:add",
-    )
-    async def add_route(
-        self,
-        interaction: discord.Interaction,
-        _button: discord.ui.Button,
-    ) -> None:
-        cog = _get_cog(interaction)
-        if not cog:
-            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
-            return
-        await cog._open_sso_route_modal(interaction)
-
-    @discord.ui.button(
-        label="Format",
-        style=discord.ButtonStyle.secondary,
-        emoji="📝",
-        custom_id="sso_routes:format",
-    )
-    async def show_format(
-        self,
-        interaction: discord.Interaction,
-        _button: discord.ui.Button,
-    ) -> None:
-        cog = _get_cog(interaction)
-        if not cog:
-            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
-            return
-        await cog._show_sso_route_format(interaction)
-
-    @discord.ui.button(
-        label="Mark Closed",
-        style=discord.ButtonStyle.secondary,
-        emoji="🔒",
-        custom_id="sso_routes:close",
-    )
-    async def mark_closed(
-        self,
-        interaction: discord.Interaction,
-        _button: discord.ui.Button,
-    ) -> None:
-        cog = _get_cog(interaction)
-        if not cog:
-            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
-            return
-        await cog._close_current_sso_route(interaction)
 
 
 def _view_for_bounty(b: dict) -> discord.ui.View | None:
@@ -1553,7 +1377,7 @@ class Bounties(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.response.send_modal(_SubmitSSORouteModal(bounty_id))
+        await interaction.response.send_modal(SubmitSSORouteModal(bounty_id))
 
     async def _show_sso_route_format(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
