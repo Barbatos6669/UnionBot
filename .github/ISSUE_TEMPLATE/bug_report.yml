@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible UnionBot problem.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve UnionBot.
+
+        Do not paste Discord tokens, OpenAI keys, `.env`, databases, backups, logs with private member data, or screenshots with private channels/member data.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Paste the commit hash or describe when you pulled the code.
+      placeholder: "e.g. 80caa74"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      options:
+        - Setup/startup
+        - Registration
+        - LFG/events
+        - Timer claims
+        - Bounties
+        - Regear/loot
+        - Dashboards/graphs
+        - AI helper
+        - Permissions/roles
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What did you expect UnionBot to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Safe log excerpt
+      description: Paste only the smallest relevant error. Remove tokens, IDs, private names, and member data.
+      render: text
+    validations:
+      required: false

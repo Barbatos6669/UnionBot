@@ -8,7 +8,7 @@ This guide assumes a Linux host with Python 3.11+ and systemd.
 sudo useradd --system --create-home --home-dir /opt/unionbot unionbot
 sudo mkdir -p /opt/unionbot
 sudo chown unionbot:unionbot /opt/unionbot
-sudo -u unionbot git clone https://github.com/YOUR-ORG/unionbot.git /opt/unionbot
+sudo -u unionbot git clone https://github.com/your-org/UnionBot.git /opt/unionbot
 cd /opt/unionbot
 sudo -u unionbot python3 -m venv .venv
 sudo -u unionbot .venv/bin/pip install -r requirements.txt

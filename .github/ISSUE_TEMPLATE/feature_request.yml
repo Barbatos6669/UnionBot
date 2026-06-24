@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a UnionBot improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What guild workflow is painful right now?
+      placeholder: "Our officers have trouble..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should UnionBot do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      options:
+        - Registration
+        - LFG/events
+        - Attendance/analytics
+        - Bounties/rewards
+        - Regear/loot
+        - Market/economy
+        - Staff/officer tools
+        - AI helper
+        - Documentation/setup
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Extra context
+      description: Screenshots are okay only if they do not contain private member data.
+    validations:
+      required: false

@@ -36,8 +36,8 @@ The bot's Discord role must be above any role it will assign.
 ## 2. Install Locally
 
 ```bash
-git clone https://github.com/YOUR-ORG/unionbot.git
-cd unionbot
+git clone https://github.com/your-org/UnionBot.git
+cd UnionBot
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env

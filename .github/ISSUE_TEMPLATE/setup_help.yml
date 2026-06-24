@@ -1,0 +1,55 @@
+name: Setup help
+description: Ask for help getting UnionBot running.
+title: "[Setup]: "
+labels: ["setup", "question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read README, docs/SETUP.md, and docs/FIRST_RUN.md first.
+
+        Do not upload `.env`, bot tokens, API keys, databases, backups, or screenshots with private member data.
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04, Debian 12, Windows 11, etc."
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "python3 --version"
+    validations:
+      required: true
+  - type: dropdown
+    id: runmode
+    attributes:
+      label: How are you running the bot?
+      options:
+        - Manually with python bot.py
+        - systemd service
+        - Docker or container
+        - Not sure yet
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Setup checklist
+      options:
+        - label: I created a Discord application and bot user.
+        - label: I invited the bot with bot and applications.commands scopes.
+        - label: I enabled Server Members Intent.
+        - label: I enabled Message Content Intent if using message/AI features.
+        - label: I copied .env.example to .env and filled in DISCORD_TOKEN.
+        - label: I set GUILD_DISCORD_ID during setup.
+        - label: I moved the bot role above roles it should manage.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is stuck?
+      placeholder: Describe the exact setup step and the safe error text.
+    validations:
+      required: true

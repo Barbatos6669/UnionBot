@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security and privacy notes
+    url: https://github.com/your-org/UnionBot/blob/main/docs/SECURITY.md
+    about: Read this before sharing logs, screenshots, databases, or member data.
