@@ -118,6 +118,7 @@ HELP_INTENT_RE = re.compile(
     r"anyone|somebody|officer|staff|help|stuck|confused|"
     r"register|registration|verify|verified|lfg|event|timer|claim|signup|sign up|"
     r"role|roles|ping|pings|channel|channels|content|voice|vc|discord|join|invite|guild|board|button|"
+    r"weapon|weapons|scorecard|reconcile|reconsile|attendance|inactive|activity|"
     r"apply|application|regear|loot|"
     r"bounty|market|arbitrage|route|roads|sso|faction|albion|build|comp|ip|spec|"
     r"disarray|dissary|disarry|disaray|zerg"
@@ -163,6 +164,9 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "ava": {"avalonian", "roads"},
     "avalon": {"avalonian", "roads"},
     "avalonian": {"ava", "roads"},
+    "attendance": {"event", "voice", "vc", "signup", "scorecard", "analytics"},
+    "attend": {"attendance", "event", "voice", "vc", "signup"},
+    "attending": {"attendance", "event", "voice", "vc", "signup"},
     "blackzone": {"black", "zone", "bz", "lethal"},
     "banner": {"standard", "faction", "battle", "objective"},
     "bandit": {"faction", "warfare", "assault", "martlock"},
@@ -174,6 +178,7 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "caller": {"shotcaller", "calling"},
     "cd": {"corrupted", "dungeon"},
     "clap": {"burst", "damage", "engage"},
+    "cta": {"daily", "content", "timer", "event", "season", "points", "attendance"},
     "craft": {"crafting", "economy", "focus"},
     "crafter": {"crafting", "economy", "focus"},
     "crystal": {"arena", "crystal", "pvp"},
@@ -206,6 +211,8 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "ho": {"hideout", "logistics"},
     "hauling": {"transport", "market", "route", "risk"},
     "income": {"silver", "money", "economy", "market", "profit"},
+    "inactive": {"inactivity", "lifecycle", "voice", "vc", "stat", "activity"},
+    "inactivity": {"inactive", "lifecycle", "voice", "vc", "stat", "activity"},
     "ip": {"item", "power", "spec", "gear"},
     "kills": {"pvp", "kill", "combat", "fight"},
     "loot": {"death", "drop", "gear", "regear", "split"},
@@ -221,6 +228,9 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "purge": {"remove", "buff", "defensive", "clap"},
     "rat": {"ratting", "opportunistic", "escape"},
     "regear": {"death", "event", "attendance", "voice", "loot", "loss"},
+    "reconcile": {"reconsile", "event", "report", "scorecard", "analytics", "regear"},
+    "reconciled": {"reconcile", "event", "report", "scorecard", "analytics", "regear"},
+    "reconsile": {"reconcile", "event", "report", "scorecard", "analytics", "regear"},
     "refine": {"refining", "economy", "focus"},
     "refiner": {"refining", "economy", "focus"},
     "redzone": {"red", "zone", "rz", "lethal"},
@@ -228,6 +238,7 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "rrr": {"resource", "return", "rate", "crafting", "refining", "focus"},
     "rz": {"red", "zone", "redzone", "lethal"},
     "season": {"points", "objective", "guild", "warfare", "outpost", "castle", "hideout"},
+    "scorecard": {"event", "report", "reconcile", "analytics", "attendance", "regear"},
     "silver": {"money", "economy", "market", "profit", "transport"},
     "shotcaller": {"caller", "calling"},
     "softcap": {"soft", "cap", "ip", "item", "power"},
@@ -238,6 +249,13 @@ KNOWLEDGE_TOKEN_ALIASES = {
     "statics": {"static", "dungeon", "fame", "farm"},
     "tank": {"catch", "engage", "frontline"},
     "transporting": {"transport", "hauling", "market", "route", "risk"},
+    "weapon": {"weapons", "tree", "role", "roles", "build", "comp"},
+    "weapons": {"weapon", "tree", "role", "roles", "build", "comp"},
+    "weaponroles": {"weapon", "weapons", "tree", "role", "roles", "build", "comp"},
+    "weapon-role": {"weapon", "weapons", "tree", "role", "roles", "build", "comp"},
+    "weapon-roles": {"weapon", "weapons", "tree", "role", "roles", "build", "comp"},
+    "weapon-tree": {"weapon", "weapons", "tree", "role", "roles", "build", "comp"},
+    "weapon-trees": {"weapon", "weapons", "tree", "role", "roles", "build", "comp"},
     "whatrun": {"content", "group", "size", "available", "season", "points"},
     "zerg": {"zvz", "large", "group"},
     "zvz": {"zerg", "large", "group", "pvp"},
@@ -295,8 +313,19 @@ KNOWLEDGE_FILE_HINTS = {
     "albion_pvp_comps.md": {"pvp", "comp", "clap", "melt", "caller", "shotcaller", "burst", "purge", "pierce"},
     "bot_commands.md": {"bot", "command", "commands", "slash", "profile", "dashboard", "graph", "help"},
     "bounties_rewards.md": {"bounty", "bounties", "reward", "paid", "payout", "target", "enemy"},
+    "event_attendance_analytics_regear.md": {
+        "event", "events", "attendance", "analytics", "scorecard", "reconcile",
+        "reconsile", "recap", "report", "lfg", "signup", "voice", "vc",
+        "regear", "gear", "loss", "loot", "split", "raffle", "fame",
+        "stat", "growth", "killboard", "albionbb",
+    },
     "faction_warfare.md": {"faction", "martlock", "outpost", "bandit", "enlist"},
     "guild_resource_missions.md": {"resource", "resources", "gather", "gathering", "stockpile", "mission", "stack", "stacks", "ore", "hide", "fiber", "wood", "stone", "bounty"},
+    "inactivity_lifecycle_policy.md": {
+        "inactive", "inactivity", "lifecycle", "role", "roles", "alumni",
+        "recruit", "member", "veteran", "guest", "vc", "voice", "stat",
+        "movement", "activity", "purge", "nudge", "loa", "absence", "recover",
+    },
     "lfg_events.md": {"lfg", "event", "events", "signup", "timer", "voice", "reschedule", "cancel"},
     "market_economy.md": {"market", "economy", "buy", "sell", "order", "arbitrage", "transport", "haul"},
     "registration.md": {"register", "registration", "verify", "verified", "unverified", "guest", "screenshot"},
@@ -307,6 +336,11 @@ KNOWLEDGE_FILE_HINTS = {
     "unionbot_stand_in_officer_playbook.md": {"unionbot", "ai", "officer", "standin", "stand", "fallback", "help", "unanswered"},
     "unionbot_answer_playbook.md": {"unionbot", "answer", "playbook", "style", "examples", "short", "clarify", "focus", "fire", "oc", "overcharge", "disarray", "buy", "order", "sell", "register", "lfg", "black", "zone", "death", "regear", "faction", "roads", "sso", "market", "bounty", "new", "player"},
     "union_guild_operations.md": {"union", "guild", "operations", "channel", "channels", "role", "roles", "guest", "alliance", "travelersunion", "lfg", "register", "registration", "faction", "martlock", "sso", "market", "bounty", "regear"},
+    "weapon_roles_and_content_pings.md": {
+        "weapon", "weapons", "tree", "trees", "role", "roles", "weaponrole",
+        "weaponroles", "content", "pings", "ping", "self", "assign",
+        "shotcaller", "comp", "build", "tank", "healer", "dps", "support",
+    },
 }
 
 
@@ -398,7 +432,22 @@ def _knowledge_phrases(value: str) -> set[str]:
         "making money",
         "season points",
         "event voice",
+        "voice attendance",
+        "event attendance",
+        "event analytics",
+        "event scorecard",
+        "event reconcile",
         "join voice",
+        "loot split",
+        "gear loss",
+        "regear report",
+        "daily cta",
+        "inactive status",
+        "content pings",
+        "weapon roles",
+        "weapon role",
+        "weapon tree",
+        "weapon trees",
         "gear check",
         "minimum ip",
         "static dungeon",
@@ -795,6 +844,7 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
     event_board = channel("event_board", "the event board")
     lfg_posts = channel("lfg_posts", "the LFG channel")
     content_roles = channel("content_roles", "the content roles channel")
+    weapon_roles = channel("weapon_roles", content_roles)
     help_channel = channel("help", "the help channel")
     regear = channel("regear", "the regear board")
     bounties = channel("bounties", "the bounty board")
@@ -904,6 +954,15 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
         return (
             f"Use {content_roles} to pick content pings. Pick only the content you actually want alerts for, "
             "so announcements stay useful instead of turning into noise."
+        )
+
+    if (
+        (words & {"weapon", "weapons"} and words & {"role", "roles", "tree", "trees", "pick", "where", "channel"})
+        or has("weapon roles", "weapon role", "weapon tree", "weapon trees")
+    ):
+        return (
+            f"Use {weapon_roles} to pick weapon-tree roles. Those are broad trees like tank/melee, ranged DPS, healer/support lines; "
+            "they help shotcallers build comps and find swaps. Content roles are still the place for pings."
         )
 
     if words & {"comp", "comps", "build", "builds", "vod", "vods", "shotcall", "shotcalling", "planning"}:
@@ -1399,6 +1458,7 @@ class AIAssistant(commands.Cog):
             ("lfg_board_channel_id", "event board"),
             ("lfg_post_channel_id", "looking for group"),
             ("content_roles_channel_id", "content roles"),
+            ("weapon_roles_channel_id", "weapon roles"),
             ("regear_board_channel_id", "regear requests"),
             ("bounty_board_channel_id", "bounty board"),
             ("sso_routes_channel_id", "SSO routes"),
@@ -1440,6 +1500,9 @@ class AIAssistant(commands.Cog):
             "Do not tell members to use the SSO route board for LFG.\n"
             "Other systems:\n"
             "- Prime timer claims reserve Albion prime windows. Timer days use 18/20/22 UTC plus 00/02/04 UTC on the next UTC date.\n"
+            "- Content roles are for content pings. Weapon-tree roles are for comp planning and show which broad weapon lines members can bring.\n"
+            "- Event signups and event voice are analytics inputs: they help scorecards, attendance, raffles, stat movement, loot, and regear review.\n"
+            "- Inactive is a lifecycle/access state based on configured activity signals like voice and stat movement; it is not a public punishment.\n"
             "- Bounties are guild-funded tasks. Completed bounty payouts may require an officer to confirm in-game payment.\n"
             "- SSO routes are only for scouting route reports; mention them only when the user asks about SSO/routes/scouting.\n"
             "- Market/arbitrage posts are buy-order/sell-order suggestions, not a promise that instant market prices will still be there.\n"
@@ -1565,6 +1628,7 @@ class AIAssistant(commands.Cog):
         event_board = mention(config_keys=("lfg_board_channel_id", "content_curator_board_channel_id"), names=("event-board",))
         lfg = mention(config_keys=("lfg_post_channel_id", "lfg_channel_id", "content_curator_channel_id"), names=("looking-for-group",))
         content_roles = mention(config_keys=("content_roles_channel_id",), names=("content-roles",))
+        weapon_roles = mention(config_keys=("weapon_roles_channel_id", "content_roles_channel_id"), names=("content-roles",))
         votes = mention(config_keys=("member_survey_channel_id", "votes_channel_id"), names=("votes",))
         english = mention(names=("english-chat",))
         flex = mention(names=("flex",))
@@ -1612,7 +1676,7 @@ class AIAssistant(commands.Cog):
         lines = [
             "Server operations directory. Use these exact mentions when routing members:",
             f"- Start Here: guide {guide}; rules {rules}; register {register}; guild application {apply}; staff applications {staff_apps}; help tickets {help_channel}.",
-            f"- Union Board: announcements {announcements}; event board {event_board}; LFG posts {lfg}; content roles {content_roles}; votes/surveys {votes}.",
+            f"- Union Board: announcements {announcements}; event board {event_board}; LFG posts {lfg}; content roles/pings {content_roles}; weapon-tree roles {weapon_roles}; votes/surveys {votes}.",
             f"- Union Hall: main chat {english}; flex {flex}; hall of fame {hall}; union lore {lore}; bot commands/testing {bot_commands}.",
             f"- Content Chat: Ava/Roads {ava_roads}; Mists {mists}; Hellgates {hellgates}; Ganking {ganking}; Gathering {gathering}; Fame Farm {fame_farm}.",
             f"- Content Ops: planning {planning}; shotcalling SOP {sop}; comps/builds {comps}; regear requests {regear}; battle VODs {vods}.",
@@ -1625,6 +1689,7 @@ class AIAssistant(commands.Cog):
             f"- Staff/private for officers only: officer tasks {officer_tasks}; officer chat {officer_chat}.",
             "Routing rules:",
             "- Normal guild LFG/event creation uses the event board; event posts and signup/withdraw live in LFG posts.",
+            "- Content roles control pings; weapon-tree roles help shotcallers see broad weapon lines for comp planning.",
             "- Faction Warfare LFG/events should use Martlock Faction LFG, not normal guild LFG, unless staff says otherwise.",
             "- Alliance-wide content should use alliance events/LFG; alliance requirements and recruitment info use alliance info.",
             "- Registration screenshots belong in the registration flow; if someone posts early, tell them to click Register again.",
@@ -1646,6 +1711,7 @@ class AIAssistant(commands.Cog):
             ("event board", ("lfg_board_channel_id", "content_curator_board_channel_id")),
             ("LFG posts", ("lfg_post_channel_id", "lfg_channel_id", "content_curator_channel_id")),
             ("content roles", ("content_roles_channel_id",)),
+            ("weapon roles", ("weapon_roles_channel_id", "content_roles_channel_id")),
             ("votes/surveys", ("member_survey_channel_id", "votes_channel_id")),
             ("regear requests", ("regear_board_channel_id",)),
             ("bounties", ("bounty_board_channel_id",)),
@@ -1707,6 +1773,7 @@ class AIAssistant(commands.Cog):
             return ", ".join(present) if present else "none cached"
 
         content_roles: list[str] = []
+        weapon_roles: list[str] = []
         seen: set[str] = set()
         try:
             if not self.bot.db.connection:
@@ -1729,11 +1796,35 @@ class AIAssistant(commands.Cog):
                 content_roles.append(name)
                 seen.add(name.lower())
 
+        try:
+            if not self.bot.db.connection:
+                self.bot.db.connect()
+            self.bot.db.cursor.execute(
+                "SELECT key, value FROM guild_config "
+                "WHERE key LIKE 'weapon_role_%' AND value IS NOT NULL AND value != '' "
+                "ORDER BY key"
+            )
+            weapon_role_rows = [dict(row) for row in self.bot.db.cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"AI weapon role context query failed: {exc!r}")
+            weapon_role_rows = []
+
+        seen_weapon: set[str] = set()
+        for row in weapon_role_rows:
+            role_id = str(row.get("value") or "")
+            role = by_id.get(role_id)
+            name = str((role or {}).get("name") or "").strip()
+            if name and name.lower() not in seen_weapon:
+                weapon_roles.append(name)
+                seen_weapon.add(name.lower())
+
         return (
             "Roles: identity/lifecycle roles include "
             f"{_names(identity_names)}. Staff/caller roles include {_names(staff_names)}. "
             "Content ping roles configured on the content roles panel include "
             f"{', '.join(content_roles[:35]) if content_roles else 'none cached'}. "
+            "Weapon-tree roles configured for comp planning include "
+            f"{', '.join(weapon_roles[:35]) if weapon_roles else 'none cached'}. "
             "Do not ping roles unless the user explicitly asks for a ping; describe the role by name instead."
         )
 
@@ -2491,6 +2582,7 @@ class AIAssistant(commands.Cog):
                 "event_board": mention("lfg_board_channel_id", "content_curator_board_channel_id", names=("event-board",)),
                 "lfg_posts": mention("lfg_post_channel_id", "lfg_channel_id", "content_curator_channel_id", names=("looking-for-group",)),
                 "content_roles": mention("content_roles_channel_id", names=("content-roles",)),
+                "weapon_roles": mention("weapon_roles_channel_id", "content_roles_channel_id", names=("content-roles",)),
                 "help": mention("help_channel_id", "help_ticket_channel_id", names=("help-ticket",)),
                 "regear": mention("regear_board_channel_id", names=("regear-request",)),
                 "bounties": mention("bounty_board_channel_id", names=("bounty-board",)),

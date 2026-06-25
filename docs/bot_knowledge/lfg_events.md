@@ -1,6 +1,6 @@
 # LFG And Event Planning
 
-Keywords: lfg event events event board signup sign up withdraw voice channel thread timer prime general lfg shotcaller ip comp content type ping reschedule cancel
+Keywords: lfg event events event board signup sign up withdraw voice channel thread timer prime general lfg shotcaller ip comp content type ping reschedule cancel attendance analytics scorecard regear loot split
 
 Use the event board to create organized content.
 
@@ -27,6 +27,8 @@ Join an LFG:
 - Click Withdraw if you cannot attend.
 - If a comp is attached, use Pick build if you need to claim a specific build.
 - Read the event thread for planning and questions.
+- Signups are data. They help leadership see what people actually want to run,
+  whether a timer is strong enough, and what content should be repeated.
 
 Voice channels:
 
@@ -34,6 +36,20 @@ Voice channels:
 - Some voice channels are restricted to signed-up members for security.
 - If you cannot join the event voice, make sure you signed up first or ask the
   caller/officer.
+- Event voice is attendance proof. It helps scorecards, raffles, regear review,
+  and future planning.
+
+Analytics and regear:
+
+- Event reports are best-effort scorecards built from signups, event voice
+  snapshots, profile stat movement, killboard data, loot input, and officer
+  review.
+- If members skip signups or voice, the bot may undercount attendance and may
+  have weaker regear proof.
+- Regear is strongest when the member signed up, joined event voice, died during
+  the event window, and the death matches the content.
+- Loot split data and officer-entered event loot help compare profit/loss after
+  the run.
 
 Timer reminders:
 

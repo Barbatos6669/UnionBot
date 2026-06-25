@@ -1,6 +1,6 @@
 # Home Guild Guild Operations
 
-Keywords: home guild operations channels roles guild alliance guest unionbot officer routing register lfg event board content roles faction martlock bounty sso market regear shotcaller
+Keywords: home guild operations channels roles guild alliance guest unionbot officer routing register lfg event board content roles weapon roles faction martlock bounty sso market regear shotcaller analytics scorecard attendance inactive
 
 UnionBot should answer like a stand-in officer who knows the server layout, but
 does not make leadership decisions.
@@ -51,6 +51,8 @@ Routing rules:
 - LFG creation starts at the event board, not the Looking For Group channel.
 - Looking For Group is where event posts appear and where members sign up.
 - Content-role/ping questions go to content roles.
+- Weapon-tree role questions usually go to the same self-assign role area as
+  content roles unless staff moved the weapon panel.
 - Bounty questions go to bounty board.
 - SSO route questions go to SSO routes.
 - Market/arbitrage questions go to Union Market.
@@ -69,6 +71,10 @@ LFG and event operations:
 - The event board is where people click buttons to create LFGs.
 - The event post is where members sign up or withdraw.
 - Some event voice rooms are restricted to signed-up members to reduce spying.
+- Signups and event voice are important because they feed analytics, scorecards,
+  attendance proof, raffles, and regear review.
+- Event reports are best-effort. If members skip signups or event voice, the bot
+  may undercount the event.
 - Faction Warfare LFGs should route to faction event spaces when configured.
 - Alliance LFGs should use alliance event spaces when configured.
 - Event cancellation should clean up the event post, timer claim, thread, and

@@ -1,6 +1,6 @@
 # Roles And Channels
 
-Keywords: role roles channel channels ping content ping homeguild alliance guest recruit verified unverified inactive alumni officer shotcaller content role pvp faction roads gathering transport
+Keywords: role roles channel channels ping content ping weapon roles weapon tree homeguild alliance guest recruit verified unverified inactive alumni officer shotcaller content role pvp faction roads gathering transport
 
 Roles control visibility, pings, identity, and access. UnionBot assigns most
 identity roles from Albion API data when a member registers.
@@ -38,9 +38,22 @@ Scale, ZvZ, Hellgates, Crystal Arena, Duo Mists, Abyssal Depths, Roads, Group
 Dungeons, Static Dungeons, Avalonian Dungeons, World Boss, Tracking, Gathering,
 Transport, and Economy.
 
+Weapon-tree roles:
+
+- Weapon-tree roles are separate from content pings.
+- Content roles answer: "What content do you want to be alerted for?"
+- Weapon-tree roles answer: "What broad weapon lines can you bring to a comp?"
+- Weapon-tree roles should stay broad: Sword, Axe, Mace, Hammer, Spear,
+  Dagger, Quarterstaff, War Gloves, Bow, Crossbow, Fire, Frost, Cursed, Arcane,
+  Holy, Nature, and Shapeshifter.
+- Members should pick trees they can realistically play in organized content,
+  not every weapon they own at low spec.
+
 Guidance:
 
 - If someone says they are not getting pings, tell them to check content roles.
+- If someone asks how shotcallers know what they can play, tell them to set
+  weapon-tree roles.
 - If someone can see a channel they should not see, ask an officer to check role
   permissions.
 - If someone cannot see a channel they should see, make sure they are verified

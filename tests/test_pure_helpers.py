@@ -58,6 +58,7 @@ from cogs._primetime_claims import (
     normalize_claim_window,
 )
 from cogs.ai_assistant import (
+    KNOWLEDGE_FILE_HINTS,
     _discord_timestamp,
     _knowledge_phrases,
     _knowledge_tokens,
@@ -155,6 +156,18 @@ def test_quick_workflow_answer_routes_registration_and_lfg() -> None:
     assert "SSO" not in lfg
 
 
+def test_quick_workflow_answer_routes_weapon_roles() -> None:
+    channels = {
+        "content_roles": "<#content-roles>",
+        "weapon_roles": "<#weapon-roles>",
+    }
+
+    answer = _quick_workflow_answer("where do i pick weapon roles?", channels) or ""
+    assert "<#weapon-roles>" in answer
+    assert "comp" in answer.lower()
+    assert "pings" in answer.lower()
+
+
 def test_quick_workflow_answer_ignores_albion_terms() -> None:
     assert _quick_workflow_answer("what is focus fire?", {}) is None
 
@@ -192,6 +205,19 @@ Use buy orders and sell orders.
     )
     assert scored[-1][1] == "Registration rescue"
     assert "click Register again" in scored[-1][2]
+
+
+def test_ai_knowledge_terms_cover_event_weapon_and_inactivity_workflows() -> None:
+    tokens = _knowledge_tokens("why does the scorecard need vc attendance for reconsile and regear?")
+    assert {"scorecard", "attendance", "analytics", "regear"} <= tokens
+
+    phrases = _knowledge_phrases("where do i pick weapon roles and why join event voice?")
+    assert "weapon roles" in phrases
+    assert "event voice" in phrases
+
+    assert "weapon_roles_and_content_pings.md" in KNOWLEDGE_FILE_HINTS
+    assert "event_attendance_analytics_regear.md" in KNOWLEDGE_FILE_HINTS
+    assert "inactivity_lifecycle_policy.md" in KNOWLEDGE_FILE_HINTS
 
 
 def test_ai_live_context_helpers_format_time_and_intent() -> None:
