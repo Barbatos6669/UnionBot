@@ -32,6 +32,7 @@ from cogs._content_config import (
     season_point_focus_recommendation_keys,
 )
 from cogs._content_views import _availability_slot_heading, _availability_timer_window
+from cogs._event_reports import _suppressed_auto_regear_lines
 from cogs._lfg_config import PrimeSlot, display_slot_label, prime_slot_display_label
 from cogs._lfg_helpers import (
     _event_access_role_name,
@@ -307,6 +308,22 @@ def test_unverified_kick_targets_skip_stale_unverified_on_registered_members() -
     targets = _collect_unverified_kick_targets(_KickGuild([unverified, verified, member]), 7)
 
     assert targets == [(eligible, 9)]
+
+
+def test_event_report_regear_requests_are_consolidated_not_fanned_out() -> None:
+    lines = _suppressed_auto_regear_lines(
+        [
+            {"estimated_value": 1_500_000},
+            {"estimated_value": 0},
+            {"estimated_value": 250_000},
+        ]
+    )
+    text = "\n".join(lines)
+
+    assert "not** auto-created" in text
+    assert "Regear Review" in text
+    assert "Deaths listed: **3**" in text
+    assert "Manual pricing needed: **1**" in text
 
 
 def test_quick_workflow_answer_routes_server_categories() -> None:

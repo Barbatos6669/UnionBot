@@ -68,6 +68,12 @@ or needs officer input such as loot value.
 
 ## Regear Context
 
+Event reconcile posts a consolidated regear review list. It does not create one
+individual officer regear card per death, because large CTA wipes can spam the
+officer channel. Officers should use the list/continuation embeds to review the
+death rows, then handle payouts or ask players for manual regear submissions as
+needed.
+
 The cleanest regear proof is:
 
 - The member signed up.

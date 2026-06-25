@@ -28,7 +28,6 @@ from cogs._event_report_time import parse_dt as _parse_dt
 from cogs._event_report_ui import build_event_report_view, register_persistent_event_report_views
 from cogs._event_scorecard import build_event_scorecard_graph
 from cogs.regear import (
-    create_regear_review_from_death_summary,
     enrich_death_summaries_with_estimates,
 )
 from debug import error_log
@@ -196,6 +195,22 @@ def _regear_death_line(
         f"{linked} - {_fmt_num(death.get('fame'))} fame, {loc}, "
         f"killed by {killer}. Signup: {signed}; VC: yes. {value_text}."
     )
+
+
+def _suppressed_auto_regear_lines(deaths: list[dict]) -> list[str]:
+    priced = sum(1 for death in deaths if int(death.get("estimated_value") or 0) > 0)
+    manual = max(0, len(deaths) - priced)
+    total = sum(int(death.get("estimated_value") or 0) for death in deaths)
+    lines = [
+        "Individual regear request cards are **not** auto-created from event reconcile.",
+        "Use the consolidated **Regear Review** list and continuation embed(s) instead.",
+        f"Deaths listed: **{len(deaths)}**",
+        f"Estimated value listed: **{_fmt_num(total)}**",
+    ]
+    if manual:
+        lines.append(f"Manual pricing needed: **{manual}** death(s)")
+    lines.append("Manual/player-submitted regear requests still use the normal regear board.")
+    return lines
 
 
 def _row_before(db, discord_id: str, when: dt.datetime) -> dict | None:
@@ -1087,46 +1102,9 @@ async def build_event_report_embed(
     embed.add_field(name="Regear Review", value=_clamp("\n".join(summary_lines)), inline=False)
 
     if create_regear_tasks and deaths:
-        task_counts: defaultdict[str, int] = defaultdict(int)
-        created_ids: list[int] = []
-        for death in deaths:
-            did = str(death.get("discord_id") or "")
-            if not did:
-                continue
-            try:
-                request_id, status = await create_regear_review_from_death_summary(
-                    bot,
-                    discord_id=did,
-                    summary=death,
-                    lfg_event=event,
-                )
-            except Exception as exc:  # noqa: BLE001
-                error_log(f"auto event regear task failed for event #{event_id}: {exc!r}")
-                task_counts["failed"] += 1
-                continue
-            task_counts[status] += 1
-            if request_id:
-                created_ids.append(int(request_id))
-
-        task_lines: list[str] = []
-        if created_ids:
-            task_lines.append(
-                "Created: "
-                + ", ".join(f"**#{rid}**" for rid in created_ids)
-            )
-        if task_counts.get("no_value"):
-            task_lines.append(f"Needs manual pricing: **{task_counts['no_value']}**")
-        if task_counts.get("duplicate"):
-            task_lines.append(f"Already had regear task: **{task_counts['duplicate']}**")
-        if task_counts.get("not_configured"):
-            task_lines.append("Regear review channel is not configured.")
-        if task_counts.get("failed"):
-            task_lines.append(f"Failed: **{task_counts['failed']}**")
-        if not task_lines:
-            task_lines.append("No automatic regear tasks created.")
         embed.add_field(
-            name="Auto Regear Tasks",
-            value=_clamp("\n".join(task_lines)),
+            name="Regear Requests",
+            value=_clamp("\n".join(_suppressed_auto_regear_lines(deaths))),
             inline=False,
         )
 
