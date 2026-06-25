@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 from collections import defaultdict
 
 import discord
@@ -84,6 +85,52 @@ def _queue_event_report_pending_data(
     except Exception as exc:  # noqa: BLE001
         error_log(f"event report pending-data queue failed for #{event_id}: {exc!r}")
         return None, 0
+
+
+def _json_default(value):
+    if isinstance(value, dt.datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _store_event_report_combat_cache(
+    db,
+    event_id: int,
+    *,
+    kills: list[dict],
+    deaths: list[dict],
+    albionbb_summary: dict,
+    scanned: int,
+) -> None:
+    if not kills and not deaths:
+        return
+    try:
+        db.upsert_event_report_combat_cache(
+            event_id,
+            kills_json=json.dumps(kills, default=_json_default),
+            deaths_json=json.dumps(deaths, default=_json_default),
+            albionbb_json=json.dumps(albionbb_summary or {}, default=_json_default),
+            scanned=scanned,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"event report combat cache write failed for #{event_id}: {exc!r}")
+
+
+def _load_event_report_combat_cache(db, event_id: int) -> dict | None:
+    try:
+        row = db.fetch_event_report_combat_cache(event_id)
+        if not row:
+            return None
+        return {
+            "kills": json.loads(row.get("kills_json") or "[]"),
+            "deaths": json.loads(row.get("deaths_json") or "[]"),
+            "albionbb_summary": json.loads(row.get("albionbb_json") or "{}"),
+            "scanned": int(row.get("scanned") or 0),
+            "updated_at": row.get("updated_at"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"event report combat cache read failed for #{event_id}: {exc!r}")
+        return None
 
 
 def _append_paged_fields(
@@ -702,6 +749,8 @@ async def build_event_report_embed(
     pending_reason = ""
     pending_retry_at: dt.datetime | None = None
     pending_attempt = 0
+    cache_note = ""
+    used_cached_combat = False
     if fetch_killboard and confirmed_ids:
         try:
             albionbb_summary = await _fetch_albionbb_event_window(
@@ -771,6 +820,42 @@ async def build_event_report_embed(
 
     if fetch_killboard and confirmed_ids and errors and not pending_reason:
         pending_reason = "Official killboard lookup partially failed."
+
+    if fetch_killboard and pending_reason:
+        cached = _load_event_report_combat_cache(db, event_id)
+        if cached:
+            cached_kills = list(cached.get("kills") or [])
+            cached_deaths = list(cached.get("deaths") or [])
+            if len(cached_kills) > len(kills):
+                kills = cached_kills
+                used_cached_combat = True
+            if len(cached_deaths) > len(deaths):
+                deaths = cached_deaths
+                used_cached_combat = True
+            cached_bb = dict(cached.get("albionbb_summary") or {})
+            if used_cached_combat and cached_bb.get("enabled") and not (albionbb_summary or {}).get("enabled"):
+                albionbb_summary = cached_bb
+            if used_cached_combat and not scanned:
+                scanned = int(cached.get("scanned") or 0)
+            if used_cached_combat:
+                cached_at = _parse_dt(cached.get("updated_at"))
+                cache_note = (
+                    "Fresh killboard/pricing data is incomplete, so this report is showing "
+                    "the last cached combat/regear estimate"
+                )
+                if cached_at:
+                    cache_note += f" from {_discord_ts(cached_at, 'R')}"
+                cache_note += " while the bot retries."
+
+    if fetch_killboard and (kills or deaths) and not used_cached_combat:
+        _store_event_report_combat_cache(
+            db,
+            event_id,
+            kills=kills,
+            deaths=deaths,
+            albionbb_summary=albionbb_summary,
+            scanned=scanned,
+        )
 
     if fetch_killboard:
         if pending_reason:
@@ -897,6 +982,8 @@ async def build_event_report_embed(
             value_lines.append(f"Deaths needing manual price check: **{manual_death_values}**")
     if pricing_note:
         value_lines.append(pricing_note)
+    if cache_note:
+        value_lines.append(cache_note)
     if not fetch_killboard:
         value_lines.append("Killboard lookup skipped for this report.")
     elif errors:
@@ -924,6 +1011,8 @@ async def build_event_report_embed(
             "The bot queued an automatic retry and will post an updated scorecard when the data lands.",
             "Attendance, signups, loot input, and AlbionBB battle intel can still be reviewed now.",
         ]
+        if cache_note:
+            pending_lines.append("Cached combat/regear estimates are being shown until fresh data succeeds.")
         if pending_retry_at is not None:
             pending_lines.append(
                 f"Next retry: {_discord_ts(pending_retry_at, 'R')} "

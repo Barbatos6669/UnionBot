@@ -2321,6 +2321,19 @@ class Database:
             'CREATE INDEX IF NOT EXISTS ix_event_report_pending_due '
             'ON event_report_pending_data(next_retry_at)'
         )
+        # Last successful combat/regear lookup for an event report. External
+        # killboard/price APIs can be flaky, so reposts should not lose known
+        # death rows and gear estimates just because the newest lookup timed out.
+        self.execute('''
+            CREATE TABLE IF NOT EXISTS event_report_combat_cache (
+                event_id        INTEGER PRIMARY KEY,
+                kills_json      TEXT NOT NULL DEFAULT '[]',
+                deaths_json     TEXT NOT NULL DEFAULT '[]',
+                albionbb_json   TEXT NOT NULL DEFAULT '{}',
+                scanned         INTEGER NOT NULL DEFAULT 0,
+                updated_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+        ''')
         # SOP / policy snapshots — content_hash compared daily for drift.
         self.execute('''
             CREATE TABLE IF NOT EXISTS policy_snapshots (
@@ -3477,6 +3490,50 @@ class Database:
             "DELETE FROM event_report_pending_data WHERE event_id = ?",
             (int(event_id),),
         )
+
+    def upsert_event_report_combat_cache(
+        self,
+        event_id: int,
+        *,
+        kills_json: str,
+        deaths_json: str,
+        albionbb_json: str = "{}",
+        scanned: int = 0,
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO event_report_combat_cache
+                (event_id, kills_json, deaths_json, albionbb_json, scanned, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(event_id) DO UPDATE SET
+                kills_json = excluded.kills_json,
+                deaths_json = excluded.deaths_json,
+                albionbb_json = excluded.albionbb_json,
+                scanned = excluded.scanned,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(event_id),
+                str(kills_json or "[]"),
+                str(deaths_json or "[]"),
+                str(albionbb_json or "{}"),
+                max(0, int(scanned or 0)),
+            ),
+        )
+
+    def fetch_event_report_combat_cache(self, event_id: int) -> dict | None:
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                "SELECT * FROM event_report_combat_cache WHERE event_id = ?",
+                (int(event_id),),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_event_report_combat_cache error: {e}")
+            return None
 
     # ── Policy snapshots (SOP drift) ───────────────────────────────────────
 
