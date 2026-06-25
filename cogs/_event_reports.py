@@ -740,6 +740,9 @@ async def build_event_report_embed(
                 pending_reason = "Gear pricing failed."
                 error_log(f"event report gear pricing failed for event #{event_id}: {exc!r}")
 
+    if fetch_killboard and confirmed_ids and errors and not pending_reason:
+        pending_reason = "Official killboard lookup partially failed."
+
     if fetch_killboard:
         if pending_reason:
             pending_retry_at, pending_attempt = _queue_event_report_pending_data(
