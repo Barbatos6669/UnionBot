@@ -43,6 +43,7 @@ STAT_METRICS = (
 )
 KILLBOARD_LIMIT = 50
 KILLBOARD_MAX_PLAYERS = 25
+KILLBOARD_CONCURRENCY = 6
 KILLBOARD_REQUEST_TIMEOUT_SECONDS = 8
 KILLBOARD_LOOKUP_TIMEOUT_SECONDS = 25
 ALBIONBB_MAX_PLAYERS = 25
@@ -240,25 +241,40 @@ async def _fetch_killboard_window(
         if (profiles.get(did) or {}).get("albion_player_id")
     ][:KILLBOARD_MAX_PLAYERS]
 
-    for did, profile in registered:
+    semaphore = asyncio.Semaphore(KILLBOARD_CONCURRENCY)
+
+    async def _fetch_player(did: str, profile: dict) -> tuple[str, dict, list[dict], list[dict], bool]:
         player_id = str(profile.get("albion_player_id"))
-        try:
-            deaths = await asyncio.to_thread(
-                albion_api.get_player_deaths,
-                player_id,
-                limit=KILLBOARD_LIMIT,
-                timeout=KILLBOARD_REQUEST_TIMEOUT_SECONDS,
-            )
-            kills = await asyncio.to_thread(
-                albion_api.get_player_kills,
-                player_id,
-                limit=KILLBOARD_LIMIT,
-                timeout=KILLBOARD_REQUEST_TIMEOUT_SECONDS,
-            )
+        async with semaphore:
+            try:
+                deaths_result, kills_result = await asyncio.gather(
+                    asyncio.to_thread(
+                        albion_api.get_player_deaths,
+                        player_id,
+                        limit=KILLBOARD_LIMIT,
+                        timeout=KILLBOARD_REQUEST_TIMEOUT_SECONDS,
+                    ),
+                    asyncio.to_thread(
+                        albion_api.get_player_kills,
+                        player_id,
+                        limit=KILLBOARD_LIMIT,
+                        timeout=KILLBOARD_REQUEST_TIMEOUT_SECONDS,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_log(f"event report killboard fetch failed for {did}: {exc!r}")
+                return did, profile, [], [], False
+        return did, profile, deaths_result, kills_result, True
+
+    fetched = await asyncio.gather(
+        *(_fetch_player(did, profile) for did, profile in registered)
+    )
+
+    for did, profile, deaths, kills, ok in fetched:
+        if ok:
             scanned += 1
-        except Exception as exc:  # noqa: BLE001
+        else:
             errors += 1
-            error_log(f"event report killboard fetch failed for {did}: {exc!r}")
             continue
 
         for raw in deaths:
