@@ -29,6 +29,7 @@ from discord.ext import commands, tasks
 from debug import info_log, error_log, warning_log
 from utils import error_embed, success_embed, info_embed, warning_embed
 from cogs.users_profile import _resolve_home_guild
+from time_utils import utc_now_naive
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -599,7 +600,7 @@ class Points(commands.Cog):
             return
 
         cooldown = get_point_setting(self.bot.db, "points_chat_cooldown_sec")
-        now = datetime.datetime.utcnow()
+        now = utc_now_naive()
         last = self._chat_cooldowns.get(message.author.id)
         if last and (now - last).total_seconds() < cooldown:
             return
@@ -681,7 +682,7 @@ class Points(commands.Cog):
     @tasks.loop(hours=1)
     async def reset_check(self) -> None:
         try:
-            now = datetime.datetime.utcnow()
+            now = utc_now_naive()
 
             # Weekly: track the ISO year-week we last reset for. If the bot was
             # offline on Monday, this still fires the first time it boots in a
@@ -964,7 +965,7 @@ class Points(commands.Cog):
     ) -> None:
         affected = self.bot.db.reset_points_window(window.value)
         # Keep auto-reset state in sync for weekly/monthly so it doesn't immediately re-fire.
-        today_iso = datetime.datetime.utcnow().date().isoformat()
+        today_iso = utc_now_naive().date().isoformat()
         if window.value == "weekly":
             self.bot.db.set_config(_RESET_KEY_WEEKLY, today_iso)
         elif window.value == "monthly":

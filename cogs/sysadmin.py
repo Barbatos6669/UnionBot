@@ -32,6 +32,7 @@ from discord.ext import commands, tasks
 from cogs._typing import Bot
 from debug import error_log, info_log, warning_log
 from utils import error_embed, info_embed, is_officer, success_embed
+from time_utils import utc_now_naive
 
 
 # ── config-audit catalog ─────────────────────────────────────────────────────
@@ -263,7 +264,7 @@ class SysAdminCog(commands.Cog):
                 else discord.Color.orange() if important
                 else discord.Color.green()
             ),
-            timestamp=_dt.datetime.utcnow(),
+            timestamp=utc_now_naive(),
         )
 
         def _fmt(rows: list[tuple[str, str, str]]) -> str:
@@ -536,7 +537,7 @@ class SysAdminCog(commands.Cog):
         backup API so a snapshot is taken safely even while the bot writes."""
         try:
             self.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            stamp = _dt.datetime.utcnow().strftime("%Y-%m-%d_%H%M%S")
+            stamp = utc_now_naive().strftime("%Y-%m-%d_%H%M%S")
             dest = self.BACKUP_DIR / f"database-{stamp}.db"
             src_path = Path("data/database.db")
             if not src_path.exists():
@@ -562,11 +563,14 @@ class SysAdminCog(commands.Cog):
     def _prune_old_backups(self) -> None:
         if not self.BACKUP_DIR.exists():
             return
-        cutoff = _dt.datetime.utcnow() - _dt.timedelta(days=self.BACKUP_RETENTION_DAYS)
+        cutoff = utc_now_naive() - _dt.timedelta(days=self.BACKUP_RETENTION_DAYS)
         pruned = 0
         for f in self.BACKUP_DIR.glob("database-*.db"):
             try:
-                mtime = _dt.datetime.utcfromtimestamp(f.stat().st_mtime)
+                mtime = _dt.datetime.fromtimestamp(
+                    f.stat().st_mtime,
+                    _dt.UTC,
+                ).replace(tzinfo=None)
                 if mtime < cutoff:
                     f.unlink()
                     pruned += 1

@@ -33,6 +33,7 @@ Background loop checks deadlines every 10 minutes and expires overdue ones.
 from __future__ import annotations
 
 from cogs._typing import Bot
+from time_utils import utc_now_naive
 import contextlib
 import datetime
 import json
@@ -1839,9 +1840,9 @@ class Bounties(commands.Cog):
 
         since_iso: str | None = None
         if period_key == "week":
-            since_iso = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).isoformat(sep=" ")
+            since_iso = (utc_now_naive() - datetime.timedelta(days=7)).isoformat(sep=" ")
         elif period_key == "month":
-            since_iso = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).isoformat(sep=" ")
+            since_iso = (utc_now_naive() - datetime.timedelta(days=30)).isoformat(sep=" ")
 
         rows = _top_earners(db, since_iso, limit=n)
         embed = discord.Embed(

@@ -23,6 +23,7 @@ from discord.ext import commands
 from config import STAFF_ROLES
 from debug import info_log
 from utils import error_embed, info_embed, success_embed, warning_embed
+from time_utils import utc_now_naive
 
 
 _CADENCE_CHOICES = [
@@ -109,7 +110,7 @@ _DEFAULT_DUTIES: dict[str, list[tuple[str, str, str]]] = {
 
 
 def _period_key(cadence: str, now: datetime.datetime | None = None) -> str:
-    now = now or datetime.datetime.utcnow()
+    now = now or utc_now_naive()
     if cadence == "daily":
         return f"D-{now.strftime('%Y-%m-%d')}"
     if cadence == "weekly":

@@ -9,6 +9,7 @@ from debug import error_log, info_log
 from config import LIFECYCLE_ROLES, STAFF_ROLES, derive_lifecycle
 from cogs._nickname_tags import tagged_nickname_for_profile
 from utils import error_embed, info_embed, mark_unionbot_handled, success_embed
+from time_utils import utc_now_naive
 import albion_api
 
 # Tracks discord_ids currently in the registration flow (screenshot pending)
@@ -262,7 +263,7 @@ def _member_since_iso(member: discord.Member, profile=None) -> str | None:
 def _days_in_server(member: discord.Member) -> int:
     if not member.joined_at:
         return 0
-    return (datetime.datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days
+    return (utc_now_naive() - member.joined_at.replace(tzinfo=None)).days
 
 
 def _resolve_home_guild(db) -> str:
@@ -1128,7 +1129,7 @@ class ProfileGroup(app_commands.Group, name="profile", description="Commands rel
         try:
             import datetime as _dt
             total_v = int(self.bot.db.fetch_voice_seconds_total(discord_id) or 0)
-            since = (_dt.datetime.utcnow() - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
+            since = (utc_now_naive() - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
             week_v = int(self.bot.db.fetch_voice_seconds_window(discord_id, since) or 0)
             if total_v > 0:
                 def _fmt_dur(s: int) -> str:

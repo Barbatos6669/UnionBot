@@ -18,6 +18,7 @@ from cogs.automation import (
     cleanup_orphan_guilds, archive_completed_events,
 )
 import albion_api
+from time_utils import utc_now_naive
 
 # Lifecycle roles that auto-progress by time. Alumni is officer-managed only
 # (a graceful "left the guild but still welcome" status). Recruit auto-progresses
@@ -1057,7 +1058,7 @@ class Events(commands.Cog):
                     # activity extends or starts the run. Resets after a
                     # missed day. Highlights at milestone days (3,7,14,…).
                     try:
-                        today_iso = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+                        today_iso = utc_now_naive().strftime("%Y-%m-%d")
                         streak_info = self.bot.db.update_activity_streak(
                             profile["discord_id"], today_iso,
                         )
@@ -1353,7 +1354,7 @@ class Events(commands.Cog):
 
     async def _auto_promote_lifecycle(self) -> int:
         """Run the time-in-server based lifecycle progression. Returns # changes applied."""
-        now = datetime.datetime.utcnow()
+        now = utc_now_naive()
         vc_inactivity_days = _get_lifecycle_int_config(
             self.bot.db,
             CFG_LIFECYCLE_VC_INACTIVITY_DAYS,
@@ -2083,7 +2084,7 @@ class Events(commands.Cog):
     async def daily_backup(self):
         try:
             self.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            stamp = utc_now_naive().strftime("%Y%m%d-%H%M%S")
             dest = self.BACKUP_DIR / f"db-{stamp}.db"
             # Run blocking backup in a thread so the event loop isn't stalled.
             await asyncio.to_thread(self._do_sqlite_backup, dest)
@@ -2164,7 +2165,7 @@ class Events(commands.Cog):
     @tasks.loop(hours=24)
     async def daily_anniversaries(self):
         try:
-            today = datetime.datetime.utcnow().date()
+            today = utc_now_naive().date()
             announced = 0
             guild = self.bot.guilds[0] if self.bot.guilds else None
             if guild is None:

@@ -27,6 +27,7 @@ from discord.ext import commands, tasks
 from cogs._typing import Bot
 from debug import info_log, error_log, warning_log
 from utils import error_embed, info_embed, is_officer, success_embed
+from time_utils import utc_now_naive
 
 
 _STAGES = ["contacted", "discord", "registered",
@@ -238,7 +239,7 @@ class RecruitmentCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         cutoff = (
-            _dt.datetime.utcnow() - _dt.timedelta(days=int(days))
+            utc_now_naive() - _dt.timedelta(days=int(days))
         ).isoformat(" ", "seconds")
         rows = self.bot.db.recruit_list(limit=200)
         stale: list[dict] = []
@@ -291,7 +292,7 @@ class RecruitmentCog(commands.Cog):
         since: str | None = None
         if days > 0:
             since = (
-                _dt.datetime.utcnow() - _dt.timedelta(days=int(days))
+                utc_now_naive() - _dt.timedelta(days=int(days))
             ).isoformat(" ", "seconds")
         rows = self.bot.db.recruit_leaderboard(since_iso=since)
         if not rows:
@@ -409,7 +410,7 @@ def _build_leaderboard_embed(db, days: int) -> discord.Embed:
     since: str | None = None
     if days > 0:
         since = (
-            _dt.datetime.utcnow() - _dt.timedelta(days=int(days))
+            utc_now_naive() - _dt.timedelta(days=int(days))
         ).isoformat(" ", "seconds")
     rows = db.recruit_leaderboard(since_iso=since) or []
     if not rows:
@@ -439,7 +440,7 @@ def _build_leaderboard_embed(db, days: int) -> discord.Embed:
         title=title,
         description="\n\n".join(lines)[:4000],
         color=discord.Color.gold(),
-        timestamp=_dt.datetime.utcnow(),
+        timestamp=utc_now_naive(),
     )
     embed.set_footer(text="Auto-refreshes hourly • UTC")
     return embed

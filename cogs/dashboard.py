@@ -26,6 +26,7 @@ from discord.ext import commands
 from cogs._typing import Bot
 from debug import error_log, info_log
 from utils import error_embed, is_officer
+from time_utils import utc_now_naive
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -45,12 +46,12 @@ def _iso_days_ago(iso: str | None) -> int | None:
         # Tolerate both "YYYY-MM-DD HH:MM:SS" and ISO with 'T'.
         s = str(iso).replace("T", " ").split(".")[0]
         dt = _dt.datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
-        delta = _dt.datetime.utcnow() - dt
+        delta = utc_now_naive() - dt
         return max(0, delta.days)
     except (ValueError, TypeError):
         try:
             dt = _dt.datetime.strptime(str(iso)[:10], "%Y-%m-%d")
-            return max(0, (_dt.datetime.utcnow() - dt).days)
+            return max(0, (utc_now_naive() - dt).days)
         except ValueError:
             return None
 
@@ -304,7 +305,7 @@ class DashboardCog(commands.Cog):
                 "Click into the linked command to drill down."
             ),
             color=discord.Color.gold(),
-            timestamp=_dt.datetime.utcnow(),
+            timestamp=utc_now_naive(),
         )
 
         # Applications & recruitment
@@ -403,7 +404,7 @@ class DashboardCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         db = self.bot.db
-        now = _dt.datetime.utcnow()
+        now = utc_now_naive()
         now_iso = now.isoformat(" ", "seconds")
         since_7d = (now - _dt.timedelta(days=7)).isoformat(" ", "seconds")
         ahead_7d = (now + _dt.timedelta(days=7)).isoformat(" ", "seconds")
@@ -853,7 +854,7 @@ class DashboardCog(commands.Cog):
         embed = discord.Embed(
             title=("Your profile" if self_view else f"Profile: {user}"),
             color=discord.Color.blue(),
-            timestamp=_dt.datetime.utcnow(),
+            timestamp=utc_now_naive(),
         )
         avatar = getattr(user, "display_avatar", None)
         if avatar:

@@ -5,7 +5,9 @@ Reads from `user_profiles.points_<window>` via `Database.top_points()`.
 
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Optional
+
 from cogs._typing import Bot
 import discord
 from discord import app_commands
@@ -14,6 +16,7 @@ from discord.ext import commands
 from debug import info_log
 from utils import info_embed
 from cogs.users_profile import _resolve_home_guild
+from time_utils import utc_now_naive
 
 
 _WINDOW_CHOICES = [
@@ -143,16 +146,15 @@ class Leaderboard(commands.Cog):
         window: "Optional[app_commands.Choice[str]]" = None,
         limit: app_commands.Range[int, 1, 25] = 10,
     ) -> None:
-        import datetime as _dt
         win = window.value if window else "7d"
         if win == "all":
             since = "0000-01-01"
             label = "🎤 All-Time Voice Leaderboard"
         elif win == "30d":
-            since = (_dt.datetime.utcnow() - _dt.timedelta(days=30)).strftime("%Y-%m-%d")
+            since = (utc_now_naive() - _dt.timedelta(days=30)).strftime("%Y-%m-%d")
             label = "🎤 30-Day Voice Leaderboard"
         else:
-            since = (_dt.datetime.utcnow() - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
+            since = (utc_now_naive() - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
             label = "🎤 7-Day Voice Leaderboard"
 
         rows = self.bot.db.top_voice(since, limit=int(limit), home_guild=_resolve_home_guild(self.bot.db))  # type: ignore[attr-defined]

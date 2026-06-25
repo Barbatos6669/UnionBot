@@ -20,6 +20,8 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 
+from time_utils import utc_now_naive
+
 from cogs._graphs_theme import (
     ACCENT,
     BG_AXES,
@@ -175,7 +177,7 @@ def _plot_daily_bars(ax, dates, values, label, color) -> None:
     if not dates:
         _empty_panel(ax)
         return
-    today = datetime.datetime.utcnow().date()
+    today = utc_now_naive().date()
     bar_colors = [color if d.date() != today else ACCENT for d in dates]
     bar_alphas = [1.0 if v > 0 else 0.25 for v in values]
     bars = ax.bar(

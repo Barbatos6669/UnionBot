@@ -24,6 +24,7 @@ from utils import (
     info_embed,
     success_embed,
 )
+from time_utils import utc_now_naive
 import albion_api
 
 CFG_LIFECYCLE_VC_INACTIVITY_DAYS = "lifecycle_vc_inactivity_days"
@@ -2000,7 +2001,7 @@ class AdminGroup(app_commands.Group, name="admin", description="Admin-only comma
         await interaction.response.defer(ephemeral=True)
         backup_dir = Path("data/backups")
         backup_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        stamp = utc_now_naive().strftime("%Y%m%d-%H%M%S")
         dest = backup_dir / f"db-{stamp}-manual.db"
         try:
             src_conn = self.bot.db.connection

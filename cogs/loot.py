@@ -33,6 +33,7 @@ keep calling it inside a confirm-then-execute flow.
 from __future__ import annotations
 
 import datetime as _dt
+from time_utils import utc_now_naive
 import re
 from collections import defaultdict
 
@@ -295,7 +296,7 @@ def _build_loot_split_embed(
         title=f"💰 Loot split — {title_label}",
         description="\n".join(desc_lines),
         color=discord.Color.gold(),
-        timestamp=_dt.datetime.utcnow(),
+        timestamp=utc_now_naive(),
     )
     if credited:
         embed.add_field(
@@ -769,7 +770,7 @@ class LootCog(commands.Cog):
         ref_type = "loot_quick_split"
         # Use the current UTC timestamp as a stable ref_id so /loot history
         # has something to query against (no LFG event id available here).
-        ref_id = _dt.datetime.utcnow().strftime("adhoc-%Y%m%d-%H%M%S")
+        ref_id = utc_now_naive().strftime("adhoc-%Y%m%d-%H%M%S")
         reason_base = f"Loot split — {label}"
         db = self.bot.db
         credited, failed = _credit_loot_split(

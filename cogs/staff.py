@@ -18,6 +18,7 @@ from discord.ext import commands
 from debug import info_log, warning_log, error_log
 from config import STAFF_ROLES, STAFF_TIERS, STAFF_DESCRIPTIONS
 from utils import confirm_action, error_embed, info_embed, success_embed, warning_embed
+from time_utils import utc_now_naive
 
 # Lifecycle roles that have the activity standing to apply for staff at all.
 # Recruit / Probationary / Inactive / Alumni cannot apply.
@@ -188,8 +189,8 @@ async def _process_application(bot: Bot, interaction: discord.Interaction, rank_
         try:
             granted_dt = datetime.datetime.fromisoformat(granted_at)
         except (TypeError, ValueError):
-            granted_dt = datetime.datetime.utcnow()
-        served_days = (datetime.datetime.utcnow() - granted_dt).days
+            granted_dt = utc_now_naive()
+        served_days = (utc_now_naive() - granted_dt).days
         if served_days < prereq_days:
             remaining = prereq_days - served_days
             await interaction.response.send_message(
@@ -1059,7 +1060,7 @@ class StaffGroup(app_commands.Group, name="staff", description="Staff applicatio
                 ephemeral=True,
             )
             return
-        granted_dt = datetime.datetime.utcnow() - datetime.timedelta(days=days_ago)
+        granted_dt = utc_now_naive() - datetime.timedelta(days=days_ago)
         # Overwrite any existing record so officers can correct a backfilled date.
         self.bot.db.execute(
             'DELETE FROM staff_role_grants WHERE discord_id = ? AND rank = ?',
@@ -1093,7 +1094,7 @@ class StaffGroup(app_commands.Group, name="staff", description="Staff applicatio
             return
         try:
             granted_dt = datetime.datetime.fromisoformat(granted_at)
-            days = (datetime.datetime.utcnow() - granted_dt).days
+            days = (utc_now_naive() - granted_dt).days
         except (TypeError, ValueError):
             days = 0
         await interaction.response.send_message(

@@ -29,6 +29,7 @@ from cogs._lfg_views import EventSignupView
 from cogs._typing import Bot
 from debug import error_log, info_log
 from utils import error_embed, info_embed, is_officer, success_embed
+from time_utils import utc_now_naive
 
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday",
         "Friday", "Saturday", "Sunday"]
@@ -381,7 +382,7 @@ class WeeklyScheduleCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        now = _dt.datetime.utcnow()
+        now = utc_now_naive()
         # Skip any slot whose next occurrence is sooner than ~10 minutes
         # away so we don't spawn a "starts in 2 minutes" event by accident.
         cutoff = now + _dt.timedelta(minutes=10)
