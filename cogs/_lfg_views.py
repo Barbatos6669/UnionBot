@@ -621,6 +621,12 @@ class _LootSplitModal(discord.ui.Modal, title="Record loot split"):
         max_length=3,
         default="n",
     )
+    silver_split = discord.ui.TextInput(
+        label="Silver bags / opt-outs (optional)",
+        placeholder="e.g. 5m | optout: @Alice @Bob",
+        required=False,
+        max_length=500,
+    )
 
     def __init__(self, event_id: int) -> None:
         super().__init__()
@@ -641,20 +647,30 @@ class _LootSplitModal(discord.ui.Modal, title="Record loot split"):
         bot: Bot = interaction.client  # type: ignore[assignment]
 
         total_silver = self._to_int(str(self.total.value))
-        if total_silver <= 0:
-            await interaction.response.send_message(
-                embed=error_embed(
-                    "Bad amount",
-                    "Total silver must be a positive whole number.",
-                ),
-                ephemeral=True,
-            )
-            return
         tax_pct = max(0, min(50, self._to_int(str(self.tax_pct.value))))
         sc_bonus_pct = max(0, min(25, self._to_int(str(self.sc_bonus_pct.value))))
         include_all_signups = str(self.include_all_signups.value or "").strip().lower() in (
             "y", "yes", "true", "1", "on",
         )
+        from cogs.loot import _parse_silver_split_field
+
+        try:
+            silver_total, silver_opt_out_ids = _parse_silver_split_field(str(self.silver_split.value or ""))
+        except ValueError as exc:
+            await interaction.response.send_message(
+                embed=error_embed("Bad silver-bag value", str(exc)),
+                ephemeral=True,
+            )
+            return
+        if total_silver <= 0 and silver_total <= 0:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Bad amount",
+                    "Enter a positive tradable loot total, a silver-bag/manual total, or both.",
+                ),
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.defer(ephemeral=False, thinking=True)
         # Lazy import to avoid circular module load at startup.
@@ -667,6 +683,8 @@ class _LootSplitModal(discord.ui.Modal, title="Record loot split"):
             sc_bonus_pct,
             str(interaction.user.id),
             include_all_signups=include_all_signups,
+            silver_total=silver_total,
+            silver_opt_out_ids=silver_opt_out_ids,
         )
         if err is not None or embed is None:
             await interaction.followup.send(

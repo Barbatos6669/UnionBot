@@ -6,17 +6,23 @@ and writing a ``silver_ledger`` row. Officers settle the balance
 in-game later; until then `/me` and `/dashboard` show the debt.
 
 Commands:
-    /loot split event:<id> total:<silver> [tax_pct=0] [shotcaller_bonus_pct=0]
+    /loot split event:<id> total:<silver> [silver_total=0]
+                            [silver_opt_out=@members] [tax_pct=0]
+                            [shotcaller_bonus_pct=0]
                             [include_all_signups=false] [shotcaller_id=auto]
+    /loot quick-split members:<mentions> total:<silver> [silver_total=0]
     /loot history event:<id>
 
 Math (all integer silver):
-    1. ``tax`` is the guild cut: ``total * tax_pct // 100``.
-    2. ``payable = total - tax``.
-    3. If shotcaller_bonus_pct > 0, the shotcaller pockets
+    1. ``total`` is the tradable/sellable loot pool.
+    2. ``tax`` is the guild cut: ``total * tax_pct // 100``.
+    3. ``payable = total - tax``.
+    4. If shotcaller_bonus_pct > 0, the shotcaller pockets
        ``payable * bonus_pct // 100`` off the top.
-    4. Remaining silver is split evenly among attendees; the modulo
+    5. Remaining silver is split evenly among attendees; the modulo
        (a few silver) goes to the guild bank as rounding.
+    6. ``silver_total`` is a separate manual pool for untradable silver bags.
+       It is split only among members who did not opt out of that pool.
 
 The whole split runs inside a single SQLite transaction so a crash
 doesn't leave half the members credited. ``adjust_silver_balance``
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+from collections import defaultdict
 
 import discord
 from discord import app_commands
@@ -43,6 +50,10 @@ _MAX_BONUS_PCT = 25
 
 # Matches <@123>, <@!123>, or a bare 17–20 digit snowflake.
 _ID_RE = re.compile(r"<@!?(\d{17,20})>|\b(\d{17,20})\b")
+_SILVER_TOKEN_RE = re.compile(
+    r"\d+(?:[\d,_ ]*\d)?(?:\.\d+)?\s*(?:million|mil|m|thousand|k)?",
+    re.IGNORECASE,
+)
 
 
 def _fmt(amount: int) -> str:
@@ -63,6 +74,60 @@ def _parse_member_ids(raw: str) -> list[str]:
     return seen
 
 
+def _parse_silver_amount(raw: str | None) -> int:
+    """Parse officer-friendly silver text like ``4.2m`` or ``750k``."""
+    text = (
+        str(raw or "")
+        .strip()
+        .lower()
+        .replace(",", "")
+        .replace("_", "")
+        .replace(" ", "")
+    )
+    if not text:
+        return 0
+    text = text.replace("silver", "").strip()
+    multiplier = 1
+    suffixes = (
+        ("million", 1_000_000),
+        ("mil", 1_000_000),
+        ("m", 1_000_000),
+        ("thousand", 1_000),
+        ("k", 1_000),
+    )
+    for suffix, value in suffixes:
+        if text.endswith(suffix):
+            multiplier = value
+            text = text[: -len(suffix)].strip()
+            break
+    if not re.fullmatch(r"\d+(\.\d+)?", text):
+        raise ValueError("Use a number like `4200000`, `4.2m`, or `750k`.")
+    return max(0, int(float(text) * multiplier))
+
+
+def _parse_silver_split_field(raw: str | None) -> tuple[int, list[str]]:
+    """Parse modal text like ``5m | optout: @A @B``.
+
+    Slash commands expose these as separate fields, but Discord modals are
+    capped at five inputs. This keeps the event-post button useful without
+    adding another modal step.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return 0, []
+    lower = text.lower()
+    opt_idx = lower.find("optout:")
+    if opt_idx < 0:
+        opt_idx = lower.find("opt-out:")
+    amount_text = text if opt_idx < 0 else text[:opt_idx]
+    opt_text = "" if opt_idx < 0 else text[opt_idx:]
+    amount_match = _SILVER_TOKEN_RE.search(amount_text)
+    amount = 0
+    if amount_match:
+        amount = _parse_silver_amount(amount_match.group(0))
+    return amount, _parse_member_ids(opt_text)
+
+
 def compute_loot_split(
     total: int,
     tax_pct: int,
@@ -70,17 +135,22 @@ def compute_loot_split(
     n_attendees: int,
     *,
     has_shotcaller: bool,
+    silver_total: int = 0,
+    n_silver_attendees: int | None = None,
 ) -> dict:
     """Pure integer-silver math for ``/loot split``.
 
-    Returns a dict with ``tax``, ``payable``, ``sc_bonus``, ``per_head``
-    and ``rounding`` (silver that drops to the bank). Extracted as a
-    pure function so the math is unit-testable without a DB.
+    ``total`` is the tradable/sellable loot pool. ``silver_total`` is for
+    untradable silver bags or other manual silver values that need a separate
+    equal split. Extracted as a pure function so the math is unit-testable
+    without a DB.
     """
     total_silver = max(0, int(total))
+    silver_pool = max(0, int(silver_total))
     tax_pct = max(0, int(tax_pct))
     bonus_pct = max(0, int(shotcaller_bonus_pct))
     n = max(0, int(n_attendees))
+    silver_n = n if n_silver_attendees is None else max(0, int(n_silver_attendees))
 
     tax = (total_silver * tax_pct) // 100
     payable = total_silver - tax
@@ -88,13 +158,159 @@ def compute_loot_split(
     remainder_pool = payable - sc_bonus
     per_head = remainder_pool // n if n else 0
     rounding = remainder_pool - (per_head * n)
+    silver_per_head = silver_pool // silver_n if silver_n else 0
+    silver_rounding = silver_pool - (silver_per_head * silver_n)
     return {
         "tax": tax,
         "payable": payable,
         "sc_bonus": sc_bonus,
         "per_head": per_head,
         "rounding": rounding,
+        "silver_total": silver_pool,
+        "silver_per_head": silver_per_head,
+        "silver_rounding": silver_rounding,
+        "silver_recipients": silver_n,
     }
+
+
+def _preview_mentions(ids: list[str], *, limit: int = 15) -> str:
+    if not ids:
+        return "_none_"
+    preview = ", ".join(f"<@{did}>" for did in ids[:limit])
+    if len(ids) > limit:
+        preview += f", _…+{len(ids) - limit} more_"
+    return preview
+
+
+def _credit_loot_split(
+    db,
+    *,
+    normal_recipient_ids: list[str],
+    silver_recipient_ids: list[str],
+    bonus_recipient_id: str | None,
+    math: dict,
+    reason_base: str,
+    ref_type: str,
+    ref_id: str,
+    actor_id: str,
+    bonus_label: str,
+) -> tuple[list[str], list[str]]:
+    credited_totals: dict[str, int] = defaultdict(int)
+    credited_parts: dict[str, list[str]] = defaultdict(list)
+    failed: list[str] = []
+
+    def _credit(discord_id: str, amount: int, reason: str, part_label: str) -> None:
+        if amount <= 0:
+            return
+        new_bal = db.adjust_silver_balance(
+            discord_id,
+            int(amount),
+            reason=reason,
+            ref_type=ref_type,
+            ref_id=ref_id,
+            actor_id=actor_id,
+        )
+        if new_bal is None:
+            failed.append(f"<@{discord_id}> ({part_label} — no profile)")
+            return
+        credited_totals[discord_id] += int(amount)
+        credited_parts[discord_id].append(part_label)
+
+    sc_bonus = int(math.get("sc_bonus") or 0)
+    per_head = int(math.get("per_head") or 0)
+    silver_per_head = int(math.get("silver_per_head") or 0)
+
+    if bonus_recipient_id and sc_bonus > 0:
+        _credit(
+            bonus_recipient_id,
+            sc_bonus,
+            f"{reason_base} ({bonus_label} bonus)",
+            f"{bonus_label} bonus",
+        )
+
+    for did in normal_recipient_ids:
+        _credit(did, per_head, reason_base, "loot")
+
+    for did in silver_recipient_ids:
+        _credit(did, silver_per_head, f"{reason_base} (silver bags)", "silver bags")
+
+    credited = [
+        f"<@{did}> **+{_fmt(total)}** _({', '.join(credited_parts[did])})_"
+        for did, total in credited_totals.items()
+    ]
+    return credited, failed
+
+
+def _build_loot_split_embed(
+    *,
+    title_label: str,
+    total_silver: int,
+    tax_pct: int,
+    shotcaller_bonus_pct: int,
+    math: dict,
+    n_normal: int,
+    silver_opt_out_ids: list[str],
+    credited: list[str],
+    failed: list[str],
+    actor_text: str,
+    ref_text: str,
+    bonus_label: str,
+) -> discord.Embed:
+    tax = int(math.get("tax") or 0)
+    sc_bonus = int(math.get("sc_bonus") or 0)
+    per_head = int(math.get("per_head") or 0)
+    rounding = int(math.get("rounding") or 0)
+    silver_total = int(math.get("silver_total") or 0)
+    silver_per_head = int(math.get("silver_per_head") or 0)
+    silver_rounding = int(math.get("silver_rounding") or 0)
+    silver_recipients = int(math.get("silver_recipients") or 0)
+
+    desc_lines = [
+        f"**Tradable loot pool:** {_fmt(total_silver)}",
+        f"Tax/guild cut: **{_fmt(tax)}** ({int(tax_pct)}%)",
+        f"Loot split: **{_fmt(per_head)}** × {n_normal}",
+    ]
+    if sc_bonus:
+        desc_lines.append(f"{bonus_label.title()} bonus: **{_fmt(sc_bonus)}** ({int(shotcaller_bonus_pct)}%)")
+    if rounding:
+        desc_lines.append(f"Loot rounding to bank: **{_fmt(rounding)}**")
+    if silver_total:
+        desc_lines.extend(
+            [
+                "",
+                f"**Silver-bag/manual pool:** {_fmt(silver_total)}",
+                f"Silver split: **{_fmt(silver_per_head)}** × {silver_recipients}",
+            ]
+        )
+        if silver_rounding:
+            desc_lines.append(f"Silver rounding to bank: **{_fmt(silver_rounding)}**")
+        if silver_opt_out_ids:
+            desc_lines.append(f"Silver opt-outs: {_preview_mentions(silver_opt_out_ids, limit=8)}")
+
+    bank_total = tax + rounding + silver_rounding
+    if bank_total:
+        desc_lines.append(f"\n**Total left to guild bank/rounding:** {_fmt(bank_total)}")
+
+    embed = discord.Embed(
+        title=f"💰 Loot split — {title_label}",
+        description="\n".join(desc_lines),
+        color=discord.Color.gold(),
+        timestamp=_dt.datetime.utcnow(),
+    )
+    if credited:
+        embed.add_field(
+            name=f"Credited ({len(credited)})",
+            value="\n".join(credited)[:1024],
+            inline=False,
+        )
+    if failed:
+        embed.add_field(
+            name=f"⚠️ Skipped ({len(failed)})",
+            value="\n".join(failed)[:1024],
+            inline=False,
+        )
+    embed.set_footer(text=f"By {actor_text} • {ref_text}")
+    return embed
 
 
 def perform_event_loot_split(
@@ -107,6 +323,8 @@ def perform_event_loot_split(
     *,
     include_all_signups: bool = False,
     shotcaller_id_override: str | None = None,
+    silver_total: int = 0,
+    silver_opt_out_ids: list[str] | None = None,
 ) -> tuple[discord.Embed | None, str | None]:
     """Execute a loot split for an LFG event without going through the
     interactive ``/loot split`` confirm flow. Returns ``(embed, error)``:
@@ -143,95 +361,67 @@ def perform_event_loot_split(
         )
 
     total_silver = int(total)
+    silver_pool = max(0, int(silver_total or 0))
+    attendee_set = set(attendee_ids)
+    silver_opt_out_ids = [
+        did for did in dict.fromkeys(str(did) for did in (silver_opt_out_ids or []) if str(did))
+        if did in attendee_set
+    ]
+    silver_recipient_ids = [did for did in attendee_ids if did not in set(silver_opt_out_ids)]
     sc_id: str | None = shotcaller_id_override or ev.get("shotcaller_id") or ev.get("creator_id")
     if sc_id is not None:
         sc_id = str(sc_id)
     math = compute_loot_split(
         total_silver, int(tax_pct), int(shotcaller_bonus_pct),
         len(attendee_ids), has_shotcaller=bool(sc_id),
+        silver_total=silver_pool,
+        n_silver_attendees=len(silver_recipient_ids),
     )
     tax = math["tax"]
     sc_bonus = math["sc_bonus"]
     per_head = math["per_head"]
-    rounding = math["rounding"]
-    n = len(attendee_ids)
+    silver_per_head = math["silver_per_head"]
 
-    if per_head <= 0 and sc_bonus <= 0:
+    if per_head <= 0 and sc_bonus <= 0 and silver_per_head <= 0:
         return None, "After tax and bonus, nothing was left to distribute."
 
     event_label = ev.get("title") or ev.get("name") or f"event #{event_id}"
     ref_type = "loot_split"
     ref_id = str(event_id)
     reason_base = f"Loot split — {event_label}"
-    credited: list[str] = []
-    failed: list[str] = []
-
-    # Shotcaller bonus first so a partial failure can't leave them with
-    # just the per-head share.
-    if sc_id and sc_bonus > 0:
-        new_bal = db.adjust_silver_balance(
-            sc_id, int(sc_bonus),
-            reason=f"{reason_base} (shotcaller bonus)",
-            ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-        )
-        if new_bal is None:
-            failed.append(f"<@{sc_id}> (shotcaller bonus — no profile)")
-        else:
-            credited.append(f"<@{sc_id}> **+{_fmt(sc_bonus)}** _(bonus)_")
-
-    if per_head > 0:
-        for did in attendee_ids:
-            new_bal = db.adjust_silver_balance(
-                did, int(per_head),
-                reason=reason_base,
-                ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-            )
-            if new_bal is None:
-                failed.append(f"<@{did}> (no profile — skipped)")
-                continue
-            line = f"<@{did}> +{_fmt(per_head)}"
-            if did == sc_id and sc_bonus > 0:
-                credited = [c for c in credited if did not in c]
-                line = (
-                    f"<@{did}> **+{_fmt(per_head + sc_bonus)}** "
-                    "_(bonus included)_"
-                )
-            credited.append(line)
-
-    embed = discord.Embed(
-        title=f"💰 Loot split — {event_label}",
-        description=(
-            f"**Pool:** {_fmt(total_silver)} • **Tax:** {_fmt(tax)} "
-            f"({int(tax_pct)}%) • **Per head:** {_fmt(per_head)} × {n}"
-            + (
-                f"\n**Shotcaller bonus:** {_fmt(sc_bonus)} "
-                f"({int(shotcaller_bonus_pct)}%)" if sc_bonus else ""
-            )
-            + (f"\n**Rounding to bank:** {_fmt(rounding)}" if rounding else "")
-        ),
-        color=discord.Color.gold(),
-        timestamp=_dt.datetime.utcnow(),
+    credited, failed = _credit_loot_split(
+        db,
+        normal_recipient_ids=attendee_ids,
+        silver_recipient_ids=silver_recipient_ids,
+        bonus_recipient_id=sc_id,
+        math=math,
+        reason_base=reason_base,
+        ref_type=ref_type,
+        ref_id=ref_id,
+        actor_id=actor_id,
+        bonus_label="shotcaller",
     )
-    if credited:
-        embed.add_field(
-            name=f"Credited ({len(credited)})",
-            value="\n".join(credited)[:1024],
-            inline=False,
-        )
-    if failed:
-        embed.add_field(
-            name=f"⚠️ Skipped ({len(failed)})",
-            value="\n".join(failed)[:1024],
-            inline=False,
-        )
-    embed.set_footer(text=f"By <@{actor_id}> • event #{event_id}")
+    embed = _build_loot_split_embed(
+        title_label=event_label,
+        total_silver=total_silver,
+        tax_pct=int(tax_pct),
+        shotcaller_bonus_pct=int(shotcaller_bonus_pct),
+        math=math,
+        n_normal=len(attendee_ids),
+        silver_opt_out_ids=silver_opt_out_ids,
+        credited=credited,
+        failed=failed,
+        actor_text=f"<@{actor_id}>",
+        ref_text=f"event #{event_id}",
+        bonus_label="shotcaller",
+    )
     info_log(
         f"button loot split actor={actor_id} event={event_id} "
-        f"total={total_silver} tax={tax} per_head={per_head} attendees={n} "
+        f"total={total_silver} tax={tax} per_head={per_head} attendees={len(attendee_ids)} "
+        f"silver_total={silver_pool} silver_per_head={silver_per_head} "
         f"sc_bonus={sc_bonus} failed={len(failed)}."
     )
     return embed, None
-    return seen
 
 
 class LootCog(commands.Cog):
@@ -253,21 +443,25 @@ class LootCog(commands.Cog):
     )
     @app_commands.describe(
         event="LFG event ID (run `/lfg list` to find it).",
-        total="Total silver to split (positive integer).",
+        total="Tradable/sellable loot value. Use 0 if only splitting silver bags.",
         tax_pct="Guild cut off the top, 0–50%. Default 0.",
         shotcaller_bonus_pct="Bonus paid to shotcaller from the post-tax pool, 0–25%. Default 0.",
         include_all_signups="If true, pay everyone who signed up instead of attended-only.",
         shotcaller="Override shotcaller (defaults to event's shotcaller_id).",
+        silver_total="Untradable silver bags/manual silver value to split separately.",
+        silver_opt_out="Members opting out of the silver-bag split (@mentions or IDs).",
     )
     async def split(
         self,
         interaction: discord.Interaction,
         event: app_commands.Range[int, 1, 1_000_000_000],
-        total: app_commands.Range[int, 1, 10_000_000_000],
+        total: app_commands.Range[int, 0, 10_000_000_000],
         tax_pct: app_commands.Range[int, 0, _MAX_TAX_PCT] = 0,
         shotcaller_bonus_pct: app_commands.Range[int, 0, _MAX_BONUS_PCT] = 0,
         include_all_signups: bool = False,
         shotcaller: discord.Member | None = None,
+        silver_total: app_commands.Range[int, 0, 10_000_000_000] = 0,
+        silver_opt_out: str | None = None,
     ) -> None:
         if not is_officer(interaction.user):
             await interaction.response.send_message(
@@ -313,8 +507,19 @@ class LootCog(commands.Cog):
             return
 
         total_silver = int(total)
-        tax = (total_silver * int(tax_pct)) // 100
-        payable = total_silver - tax
+        silver_pool = int(silver_total or 0)
+        if total_silver <= 0 and silver_pool <= 0:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "No silver entered",
+                    "Enter a tradable loot total, a silver-bag/manual total, or both.",
+                ),
+                ephemeral=True,
+            )
+            return
+        attendee_set = set(attendee_ids)
+        silver_opt_out_ids = [did for did in _parse_member_ids(silver_opt_out or "") if did in attendee_set]
+        silver_recipient_ids = [did for did in attendee_ids if did not in set(silver_opt_out_ids)]
         sc_id: str | None = None
         if shotcaller is not None:
             sc_id = str(shotcaller.id)
@@ -322,13 +527,22 @@ class LootCog(commands.Cog):
             sc_id = str(ev["shotcaller_id"])
         elif ev.get("creator_id"):
             sc_id = str(ev["creator_id"])
-        sc_bonus = 0
-        if sc_id and int(shotcaller_bonus_pct) > 0:
-            sc_bonus = (payable * int(shotcaller_bonus_pct)) // 100
-        remainder_pool = payable - sc_bonus
+        math = compute_loot_split(
+            total_silver,
+            int(tax_pct),
+            int(shotcaller_bonus_pct),
+            len(attendee_ids),
+            has_shotcaller=bool(sc_id),
+            silver_total=silver_pool,
+            n_silver_attendees=len(silver_recipient_ids),
+        )
+        tax = int(math["tax"])
+        sc_bonus = int(math["sc_bonus"])
+        per_head = int(math["per_head"])
+        rounding = int(math["rounding"])
+        silver_per_head = int(math["silver_per_head"])
+        silver_rounding = int(math["silver_rounding"])
         n = len(attendee_ids)
-        per_head = remainder_pool // n if n else 0
-        rounding = remainder_pool - (per_head * n)
 
         event_label = ev.get("title") or ev.get("name") or f"event #{event}"
 
@@ -338,21 +552,31 @@ class LootCog(commands.Cog):
             f"({int(shotcaller_bonus_pct)}%)" if sc_bonus and sc_id else ""
         )
         bank_line = (
-            f"\n• Guild bank: **{_fmt(tax + rounding)}** "
-            f"(tax {_fmt(tax)} + rounding {_fmt(rounding)})"
-            if (tax or rounding) else ""
+            f"\n• Guild bank/rounding: **{_fmt(tax + rounding + silver_rounding)}** "
+            f"(tax {_fmt(tax)} + loot rounding {_fmt(rounding)}"
+            f" + silver rounding {_fmt(silver_rounding)})"
+            if (tax or rounding or silver_rounding) else ""
+        )
+        silver_line = (
+            f"\n• Silver bags/manual: **{_fmt(silver_pool)}** → "
+            f"**{_fmt(silver_per_head)}** × {len(silver_recipient_ids)}"
+            + (
+                f"\n• Silver opt-outs: {_preview_mentions(silver_opt_out_ids, limit=8)}"
+                if silver_opt_out_ids else ""
+            )
+            if silver_pool else ""
         )
         body = (
             f"**Event:** {event_label} (id `{event}`)\n"
-            f"**Pool:** {_fmt(total_silver)} silver\n"
-            f"**Attendees:** {n}\n"
-            f"**Per head:** **{_fmt(per_head)}** silver"
-            f"{sc_line}{bank_line}\n\n"
+            f"**Tradable loot pool:** {_fmt(total_silver)} silver\n"
+            f"**Loot recipients:** {n}\n"
+            f"**Loot per head:** **{_fmt(per_head)}** silver"
+            f"{silver_line}{sc_line}{bank_line}\n\n"
             "Confirm to credit each member's silver_balance now."
         )
         ok = await confirm_action(
             interaction,
-            title=f"Confirm split — {_fmt(total_silver)} silver",
+            title=f"Confirm split — {_fmt(total_silver + silver_pool)} silver",
             description=body,
             confirm_label="Pay out",
             cancel_label="Cancel",
@@ -361,7 +585,7 @@ class LootCog(commands.Cog):
         if not ok:
             return
 
-        if per_head <= 0 and sc_bonus <= 0:
+        if per_head <= 0 and sc_bonus <= 0 and silver_per_head <= 0:
             await interaction.followup.send(
                 embed=info_embed(
                     "Nothing to pay",
@@ -375,74 +599,38 @@ class LootCog(commands.Cog):
         ref_type = "loot_split"
         ref_id = str(event)
         reason_base = f"Loot split — {event_label}"
-        credited: list[str] = []
-        failed: list[str] = []
-
-        # Pay the shotcaller bonus FIRST so any failures later don't strand
-        # them with the per-head share but no bonus.
-        if sc_id and sc_bonus > 0:
-            new_bal = db.adjust_silver_balance(
-                sc_id, int(sc_bonus),
-                reason=f"{reason_base} (shotcaller bonus)",
-                ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-            )
-            if new_bal is None:
-                failed.append(f"<@{sc_id}> (shotcaller bonus — no profile)")
-            else:
-                credited.append(f"<@{sc_id}> **+{_fmt(sc_bonus)}** _(bonus)_")
-
-        if per_head > 0:
-            for did in attendee_ids:
-                new_bal = db.adjust_silver_balance(
-                    did, int(per_head),
-                    reason=reason_base,
-                    ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-                )
-                if new_bal is None:
-                    failed.append(f"<@{did}> (no profile — skipped)")
-                else:
-                    line = f"<@{did}> +{_fmt(per_head)}"
-                    if did == sc_id and sc_bonus > 0:
-                        # Combine totals for the shotcaller in the receipt
-                        credited = [c for c in credited if did not in c]
-                        line = f"<@{did}> **+{_fmt(per_head + sc_bonus)}** _(bonus included)_"
-                    credited.append(line)
-
-        embed = discord.Embed(
-            title=f"💰 Loot split — {event_label}",
-            description=(
-                f"**Pool:** {_fmt(total_silver)} • **Tax:** {_fmt(tax)} "
-                f"({int(tax_pct)}%) • **Per head:** {_fmt(per_head)} "
-                f"× {n}"
-                + (
-                    f"\n**Shotcaller bonus:** {_fmt(sc_bonus)} ({int(shotcaller_bonus_pct)}%)"
-                    if sc_bonus else ""
-                )
-                + (
-                    f"\n**Rounding to bank:** {_fmt(rounding)}" if rounding else ""
-                )
-            ),
-            color=discord.Color.gold(),
-            timestamp=_dt.datetime.utcnow(),
+        credited, failed = _credit_loot_split(
+            db,
+            normal_recipient_ids=attendee_ids,
+            silver_recipient_ids=silver_recipient_ids,
+            bonus_recipient_id=sc_id,
+            math=math,
+            reason_base=reason_base,
+            ref_type=ref_type,
+            ref_id=ref_id,
+            actor_id=actor_id,
+            bonus_label="shotcaller",
         )
-        if credited:
-            embed.add_field(
-                name=f"Credited ({len(credited)})",
-                value="\n".join(credited)[:1024],
-                inline=False,
-            )
-        if failed:
-            embed.add_field(
-                name=f"⚠️ Skipped ({len(failed)})",
-                value="\n".join(failed)[:1024],
-                inline=False,
-            )
-        embed.set_footer(text=f"By {interaction.user} • settle in-game later")
+        embed = _build_loot_split_embed(
+            title_label=event_label,
+            total_silver=total_silver,
+            tax_pct=int(tax_pct),
+            shotcaller_bonus_pct=int(shotcaller_bonus_pct),
+            math=math,
+            n_normal=n,
+            silver_opt_out_ids=silver_opt_out_ids,
+            credited=credited,
+            failed=failed,
+            actor_text=str(interaction.user),
+            ref_text="settle in-game later",
+            bonus_label="shotcaller",
+        )
         await interaction.followup.send(embed=embed, ephemeral=False)
         info_log(
             f"{interaction.user} ran loot split event={event} total={total_silver} "
             f"tax={tax} per_head={per_head} attendees={n} "
-            f"sc_bonus={sc_bonus} failed={len(failed)}."
+            f"silver_total={silver_pool} silver_per_head={silver_per_head} "
+            f"silver_opt_outs={len(silver_opt_out_ids)} sc_bonus={sc_bonus} failed={len(failed)}."
         )
 
     # ── /loot quick-split ───────────────────────────────────────────────────
@@ -453,21 +641,25 @@ class LootCog(commands.Cog):
     )
     @app_commands.describe(
         members="Space- or comma-separated @mentions or user IDs of the people on the run.",
-        total="Total silver to split (positive integer).",
+        total="Tradable/sellable loot value. Use 0 if only splitting silver bags.",
         label="Short description for the ledger (e.g. 'Avalonian run 2026-05-14').",
         tax_pct="Guild cut off the top, 0–50%. Default 0.",
         leader_bonus_pct="Bonus paid to the leader from the post-tax pool, 0–25%. Default 0.",
         leader="Who gets the leader bonus (default: first member in the list).",
+        silver_total="Untradable silver bags/manual silver value to split separately.",
+        silver_opt_out="Members opting out of the silver-bag split (@mentions or IDs).",
     )
     async def quick_split(
         self,
         interaction: discord.Interaction,
         members: str,
-        total: app_commands.Range[int, 1, 10_000_000_000],
+        total: app_commands.Range[int, 0, 10_000_000_000],
         label: app_commands.Range[str, 1, 80],
         tax_pct: app_commands.Range[int, 0, _MAX_TAX_PCT] = 0,
         leader_bonus_pct: app_commands.Range[int, 0, _MAX_BONUS_PCT] = 0,
         leader: discord.Member | None = None,
+        silver_total: app_commands.Range[int, 0, 10_000_000_000] = 0,
+        silver_opt_out: str | None = None,
     ) -> None:
         if not is_officer(interaction.user):
             await interaction.response.send_message(
@@ -490,44 +682,71 @@ class LootCog(commands.Cog):
             return
 
         total_silver = int(total)
-        tax = (total_silver * int(tax_pct)) // 100
-        payable = total_silver - tax
+        silver_pool = int(silver_total or 0)
+        if total_silver <= 0 and silver_pool <= 0:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "No silver entered",
+                    "Enter a tradable loot total, a silver-bag/manual total, or both.",
+                ),
+                ephemeral=True,
+            )
+            return
+        attendee_set = set(attendee_ids)
+        silver_opt_out_ids = [did for did in _parse_member_ids(silver_opt_out or "") if did in attendee_set]
+        silver_recipient_ids = [did for did in attendee_ids if did not in set(silver_opt_out_ids)]
         leader_id: str | None = None
         if leader is not None:
             leader_id = str(leader.id)
         elif attendee_ids:
             leader_id = attendee_ids[0]
-        bonus = 0
-        if leader_id and int(leader_bonus_pct) > 0:
-            bonus = (payable * int(leader_bonus_pct)) // 100
-        remainder_pool = payable - bonus
         n = len(attendee_ids)
-        per_head = remainder_pool // n if n else 0
-        rounding = remainder_pool - (per_head * n)
+        math = compute_loot_split(
+            total_silver,
+            int(tax_pct),
+            int(leader_bonus_pct),
+            n,
+            has_shotcaller=bool(leader_id),
+            silver_total=silver_pool,
+            n_silver_attendees=len(silver_recipient_ids),
+        )
+        tax = int(math["tax"])
+        bonus = int(math["sc_bonus"])
+        per_head = int(math["per_head"])
+        rounding = int(math["rounding"])
+        silver_per_head = int(math["silver_per_head"])
+        silver_rounding = int(math["silver_rounding"])
 
         bonus_line = (
             f"\n• Leader bonus: <@{leader_id}> +**{_fmt(bonus)}** "
             f"({int(leader_bonus_pct)}%)" if bonus and leader_id else ""
         )
         bank_line = (
-            f"\n• Guild bank: **{_fmt(tax + rounding)}** "
-            f"(tax {_fmt(tax)} + rounding {_fmt(rounding)})"
-            if (tax or rounding) else ""
+            f"\n• Guild bank/rounding: **{_fmt(tax + rounding + silver_rounding)}** "
+            f"(tax {_fmt(tax)} + loot rounding {_fmt(rounding)}"
+            f" + silver rounding {_fmt(silver_rounding)})"
+            if (tax or rounding or silver_rounding) else ""
         )
-        roster_preview = ", ".join(f"<@{a}>" for a in attendee_ids[:15])
-        if len(attendee_ids) > 15:
-            roster_preview += f", _…+{len(attendee_ids) - 15} more_"
+        silver_line = (
+            f"\n• Silver bags/manual: **{_fmt(silver_pool)}** → "
+            f"**{_fmt(silver_per_head)}** × {len(silver_recipient_ids)}"
+            + (
+                f"\n• Silver opt-outs: {_preview_mentions(silver_opt_out_ids, limit=8)}"
+                if silver_opt_out_ids else ""
+            )
+            if silver_pool else ""
+        )
         body = (
             f"**Label:** {label}\n"
-            f"**Pool:** {_fmt(total_silver)} silver\n"
-            f"**Roster ({n}):** {roster_preview}\n"
-            f"**Per head:** **{_fmt(per_head)}** silver"
-            f"{bonus_line}{bank_line}\n\n"
+            f"**Tradable loot pool:** {_fmt(total_silver)} silver\n"
+            f"**Roster ({n}):** {_preview_mentions(attendee_ids)}\n"
+            f"**Loot per head:** **{_fmt(per_head)}** silver"
+            f"{silver_line}{bonus_line}{bank_line}\n\n"
             "Confirm to credit each member's silver_balance now."
         )
         ok = await confirm_action(
             interaction,
-            title=f"Confirm quick-split — {_fmt(total_silver)} silver",
+            title=f"Confirm quick-split — {_fmt(total_silver + silver_pool)} silver",
             description=body,
             confirm_label="Pay out",
             cancel_label="Cancel",
@@ -536,7 +755,7 @@ class LootCog(commands.Cog):
         if not ok:
             return
 
-        if per_head <= 0 and bonus <= 0:
+        if per_head <= 0 and bonus <= 0 and silver_per_head <= 0:
             await interaction.followup.send(
                 embed=info_embed(
                     "Nothing to pay",
@@ -553,68 +772,38 @@ class LootCog(commands.Cog):
         ref_id = _dt.datetime.utcnow().strftime("adhoc-%Y%m%d-%H%M%S")
         reason_base = f"Loot split — {label}"
         db = self.bot.db
-        credited: list[str] = []
-        failed: list[str] = []
-
-        if leader_id and bonus > 0:
-            new_bal = db.adjust_silver_balance(
-                leader_id, int(bonus),
-                reason=f"{reason_base} (leader bonus)",
-                ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-            )
-            if new_bal is None:
-                failed.append(f"<@{leader_id}> (leader bonus — no profile)")
-            else:
-                credited.append(f"<@{leader_id}> **+{_fmt(bonus)}** _(bonus)_")
-
-        if per_head > 0:
-            for did in attendee_ids:
-                new_bal = db.adjust_silver_balance(
-                    did, int(per_head),
-                    reason=reason_base,
-                    ref_type=ref_type, ref_id=ref_id, actor_id=actor_id,
-                )
-                if new_bal is None:
-                    failed.append(f"<@{did}> (no profile — skipped)")
-                else:
-                    line = f"<@{did}> +{_fmt(per_head)}"
-                    if did == leader_id and bonus > 0:
-                        credited = [c for c in credited if did not in c]
-                        line = f"<@{did}> **+{_fmt(per_head + bonus)}** _(bonus included)_"
-                    credited.append(line)
-
-        embed = discord.Embed(
-            title=f"💰 Loot split — {label}",
-            description=(
-                f"**Pool:** {_fmt(total_silver)} • **Tax:** {_fmt(tax)} "
-                f"({int(tax_pct)}%) • **Per head:** {_fmt(per_head)} × {n}"
-                + (
-                    f"\n**Leader bonus:** {_fmt(bonus)} ({int(leader_bonus_pct)}%)"
-                    if bonus else ""
-                )
-                + (f"\n**Rounding to bank:** {_fmt(rounding)}" if rounding else "")
-            ),
-            color=discord.Color.gold(),
-            timestamp=_dt.datetime.utcnow(),
+        credited, failed = _credit_loot_split(
+            db,
+            normal_recipient_ids=attendee_ids,
+            silver_recipient_ids=silver_recipient_ids,
+            bonus_recipient_id=leader_id,
+            math=math,
+            reason_base=reason_base,
+            ref_type=ref_type,
+            ref_id=ref_id,
+            actor_id=actor_id,
+            bonus_label="leader",
         )
-        if credited:
-            embed.add_field(
-                name=f"Credited ({len(credited)})",
-                value="\n".join(credited)[:1024],
-                inline=False,
-            )
-        if failed:
-            embed.add_field(
-                name=f"⚠️ Skipped ({len(failed)})",
-                value="\n".join(failed)[:1024],
-                inline=False,
-            )
-        embed.set_footer(text=f"By {interaction.user} • ref {ref_id}")
+        embed = _build_loot_split_embed(
+            title_label=str(label),
+            total_silver=total_silver,
+            tax_pct=int(tax_pct),
+            shotcaller_bonus_pct=int(leader_bonus_pct),
+            math=math,
+            n_normal=n,
+            silver_opt_out_ids=silver_opt_out_ids,
+            credited=credited,
+            failed=failed,
+            actor_text=str(interaction.user),
+            ref_text=f"ref {ref_id}",
+            bonus_label="leader",
+        )
         await interaction.followup.send(embed=embed, ephemeral=False)
         info_log(
             f"{interaction.user} ran loot quick-split label={label!r} ref={ref_id} "
             f"total={total_silver} tax={tax} per_head={per_head} attendees={n} "
-            f"bonus={bonus} failed={len(failed)}."
+            f"silver_total={silver_pool} silver_per_head={silver_per_head} "
+            f"silver_opt_outs={len(silver_opt_out_ids)} bonus={bonus} failed={len(failed)}."
         )
 
     # ── /loot history ───────────────────────────────────────────────────────
