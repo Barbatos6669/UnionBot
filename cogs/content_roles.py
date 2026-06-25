@@ -2,6 +2,9 @@
 
 Posts a persistent panel in a configured channel that lets members opt in
 to ping-roles for the content they care about (PvP, Ganking, Roads, etc.).
+It also manages a second persistent panel for broader Albion weapon-tree
+roles (Holy, Nature, Arcane, Mace, Sword, etc.) so shotcallers can see who
+can fill comp roles without creating one role per individual weapon.
 
 The roles are NOT created by this cog — it reuses the existing pingable
 content roles already mapped in ``guild_config`` under the LFG system's
@@ -28,10 +31,15 @@ Config keys consumed/written:
     content_roles_channel_id     — channel where the public panel lives
     content_roles_message_id     — id of the panel message (for repost)
     lfg_role_<event_type_key>    — read-only; the role IDs to offer
+    weapon_roles_channel_id      — channel where the weapon panel lives
+    weapon_roles_message_id      — id of the weapon panel message
+    weapon_role_<tree_key>       — role IDs for weapon-tree self-assign roles
 
 Slash commands (``/content-roles ...``, manage_guild gated):
     set-channel <channel>   — record where the panel should live
     post-panel              — (re)post the public panel message
+    ensure-weapon-roles     — create missing weapon-tree roles
+    post-weapon-panel       — (re)post the weapon-tree picker panel
     show-config             — debug; show resolved roles per category
 """
 from __future__ import annotations
@@ -62,6 +70,40 @@ CATEGORIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 
 CFG_PANEL_CHANNEL = "content_roles_channel_id"
 CFG_PANEL_MESSAGE = "content_roles_message_id"
+CFG_WEAPON_PANEL_CHANNEL = "weapon_roles_channel_id"
+CFG_WEAPON_PANEL_MESSAGE = "weapon_roles_message_id"
+CFG_WEAPON_ROLE_PREFIX = "weapon_role_"
+
+# Weapon tree roles intentionally stay at tree/line granularity. Per-weapon
+# roles would be too noisy and would go stale every balance patch.
+WEAPON_TREES: dict[str, tuple[str, str, str]] = {
+    "sword": ("⚔️", "Sword", "Weapon: Sword"),
+    "axe": ("🪓", "Axe", "Weapon: Axe"),
+    "mace": ("🔨", "Mace", "Weapon: Mace"),
+    "hammer": ("🔨", "Hammer", "Weapon: Hammer"),
+    "spear": ("🔱", "Spear", "Weapon: Spear"),
+    "dagger": ("🗡️", "Dagger", "Weapon: Dagger"),
+    "quarterstaff": ("🦯", "Quarterstaff", "Weapon: Quarterstaff"),
+    "war_gloves": ("🥊", "War Gloves", "Weapon: War Gloves"),
+    "bow": ("🏹", "Bow", "Weapon: Bow"),
+    "crossbow": ("🎯", "Crossbow", "Weapon: Crossbow"),
+    "fire": ("🔥", "Fire Staff", "Weapon: Fire Staff"),
+    "frost": ("❄️", "Frost Staff", "Weapon: Frost Staff"),
+    "cursed": ("☠️", "Cursed Staff", "Weapon: Cursed Staff"),
+    "arcane": ("✨", "Arcane Staff", "Weapon: Arcane Staff"),
+    "holy": ("🌟", "Holy Staff", "Weapon: Holy Staff"),
+    "nature": ("🌿", "Nature Staff", "Weapon: Nature Staff"),
+    "shapeshifter": ("🐾", "Shapeshifter Staff", "Weapon: Shapeshifter Staff"),
+}
+
+WEAPON_CATEGORIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("frontline", "🛡️ Frontline & Melee",
+     ("sword", "axe", "mace", "hammer", "spear", "dagger", "quarterstaff", "war_gloves")),
+    ("ranged", "🏹 Ranged Damage",
+     ("bow", "crossbow", "fire", "frost", "cursed")),
+    ("support", "✨ Healing & Support",
+     ("holy", "nature", "arcane", "shapeshifter")),
+)
 
 # Discord SelectOption / select-menu hard limits.
 MAX_OPTIONS_PER_SELECT = 25
@@ -98,6 +140,58 @@ def _event_type_label(key: str) -> tuple[str, str]:
     return ("📌", key)
 
 
+def _resolve_weapon_roles(
+    guild: discord.Guild, db, weapon_keys: tuple[str, ...],
+) -> list[tuple[str, discord.Role]]:
+    out: list[tuple[str, discord.Role]] = []
+    for key in weapon_keys:
+        rid = db.get_config(CFG_WEAPON_ROLE_PREFIX + key)
+        role: discord.Role | None = None
+        if rid:
+            try:
+                role = guild.get_role(int(rid))
+            except (TypeError, ValueError):
+                role = None
+        if role is None:
+            role_name = WEAPON_TREES.get(key, ("", key, ""))[2]
+            role = discord.utils.get(guild.roles, name=role_name) if role_name else None
+        if role is not None:
+            out.append((key, role))
+    return out
+
+
+def _weapon_tree_label(key: str) -> tuple[str, str]:
+    emoji, label, _role_name = WEAPON_TREES.get(key, ("📌", key, ""))
+    return emoji, label
+
+
+async def _ensure_weapon_roles(guild: discord.Guild, db) -> tuple[list[discord.Role], list[discord.Role]]:
+    """Create missing weapon-tree roles and save their config mappings."""
+    existing: list[discord.Role] = []
+    created: list[discord.Role] = []
+    for key, (_emoji, _label, role_name) in WEAPON_TREES.items():
+        role: discord.Role | None = None
+        rid = db.get_config(CFG_WEAPON_ROLE_PREFIX + key)
+        if rid:
+            try:
+                role = guild.get_role(int(rid))
+            except (TypeError, ValueError):
+                role = None
+        if role is None:
+            role = discord.utils.get(guild.roles, name=role_name)
+        if role is None:
+            role = await guild.create_role(
+                name=role_name,
+                mentionable=False,
+                reason="Create weapon-tree self-assign role",
+            )
+            created.append(role)
+        else:
+            existing.append(role)
+        db.set_config(CFG_WEAPON_ROLE_PREFIX + key, str(role.id))
+    return existing, created
+
+
 # ── Panel embed (public, top of the view) ────────────────────────────────
 def _panel_embed(guild: discord.Guild, db) -> discord.Embed:
     embed = discord.Embed(
@@ -124,6 +218,32 @@ def _panel_embed(guild: discord.Guild, db) -> discord.Embed:
             inline=False,
         )
     embed.set_footer(text="Tip: officers manage which roles appear here via the LFG config.")
+    return embed
+
+
+def _weapon_panel_embed(guild: discord.Guild, db) -> discord.Embed:
+    embed = discord.Embed(
+        title="⚔️ Weapon Tree Roles",
+        description=(
+            "Pick the weapon trees you can realistically bring to organized content. "
+            "This helps shotcallers build comps, find swaps, and see who can fill "
+            "frontline, DPS, healing, and support roles.\n\n"
+            "Choose trees, not one-off weapons. You can update this any time as your "
+            "spec or comfort changes."
+        ),
+        color=discord.Color.dark_teal(),
+    )
+    for _key, label, weapon_keys in WEAPON_CATEGORIES:
+        pairs = _resolve_weapon_roles(guild, db, weapon_keys)
+        if not pairs:
+            continue
+        names = ", ".join(role.name for _k, role in pairs)
+        embed.add_field(
+            name=f"{label}  ({len(pairs)})",
+            value=names if len(names) <= 1024 else names[:1020] + "…",
+            inline=False,
+        )
+    embed.set_footer(text="Tip: pick trees you are willing to show up on, not every tree you own.")
     return embed
 
 
@@ -340,6 +460,184 @@ class ContentRolesPanelView(discord.ui.View):
             self.add_item(CategoryButton(cat_key, label))
 
 
+class WeaponCategoryButton(discord.ui.Button):
+    def __init__(self, category_key: str, label: str) -> None:
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary,
+            custom_id=f"weapon_roles:cat:{category_key}",
+        )
+        self.category_key = category_key
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        bot = interaction.client
+        guild = interaction.guild
+        if guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Use this inside the server."),
+                ephemeral=True,
+            )
+            return
+
+        cat = next(
+            (c for c in WEAPON_CATEGORIES if c[0] == self.category_key), None,
+        )
+        if cat is None:
+            await interaction.response.send_message(
+                embed=error_embed("Unknown category", "This button is stale; please ask staff to repost the panel."),
+                ephemeral=True,
+            )
+            return
+
+        _key, label, weapon_keys = cat
+        pairs = _resolve_weapon_roles(guild, bot.db, weapon_keys)
+        if not pairs:
+            await interaction.response.send_message(
+                embed=info_embed(
+                    "No weapon roles configured",
+                    f"There are no weapon-tree roles set up under **{label}** yet. "
+                    "Officers can run `/content-roles ensure-weapon-roles`.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        pairs = pairs[:MAX_OPTIONS_PER_SELECT]
+        view = WeaponPickerView(self.category_key, label, pairs, interaction.user)
+        await interaction.response.send_message(
+            embed=info_embed(
+                f"Configure: {label}",
+                "Select every weapon tree you can play for organized content, then click **Save**.",
+            ),
+            view=view,
+            ephemeral=True,
+        )
+
+
+class WeaponRoleSelect(discord.ui.Select):
+    def __init__(
+        self,
+        category_key: str,
+        label: str,
+        pairs: list[tuple[str, discord.Role]],
+        member: discord.Member,
+    ) -> None:
+        member_role_ids = {r.id for r in member.roles}
+        options: list[discord.SelectOption] = []
+        for weapon_key, role in pairs:
+            emoji, label_text = _weapon_tree_label(weapon_key)
+            options.append(discord.SelectOption(
+                label=label_text[:100],
+                value=str(role.id),
+                emoji=emoji,
+                default=role.id in member_role_ids,
+            ))
+        super().__init__(
+            placeholder=f"Pick your {label} weapon trees…",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            custom_id=f"weapon_roles:select:{category_key}",
+        )
+        self.role_ids = [role.id for _k, role in pairs]
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
+
+class WeaponSaveButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="Save",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, WeaponPickerView):
+            return
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Use this inside the server."),
+                ephemeral=True,
+            )
+            return
+
+        select = view.select
+        wanted_ids = {int(v) for v in select.values}
+        category_role_ids = set(select.role_ids)
+        current_role_ids = {r.id for r in member.roles}
+        to_add: list[discord.Role] = []
+        to_remove: list[discord.Role] = []
+        for rid in category_role_ids:
+            role = interaction.guild.get_role(rid) if interaction.guild else None
+            if role is None:
+                continue
+            if rid in wanted_ids and rid not in current_role_ids:
+                to_add.append(role)
+            elif rid not in wanted_ids and rid in current_role_ids:
+                to_remove.append(role)
+
+        try:
+            if to_add:
+                await member.add_roles(*to_add, reason="Self-assigned via weapon-roles panel")
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="Self-removed via weapon-roles panel")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Bot is missing permissions",
+                    "I can't manage one of those roles — make sure my role is above all weapon-tree roles.",
+                ),
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            error_log(f"weapon_roles save failed for {member}: {exc!r}")
+            await interaction.response.send_message(
+                embed=error_embed("Couldn't update roles", "Try again in a moment."),
+                ephemeral=True,
+            )
+            return
+
+        added_names = ", ".join(r.name for r in to_add) or "—"
+        removed_names = ", ".join(r.name for r in to_remove) or "—"
+        unchanged = len(category_role_ids) - len(to_add) - len(to_remove)
+        embed = success_embed(
+            f"{view.category_label} updated",
+            f"**Added:** {added_names}\n**Removed:** {removed_names}\n"
+            f"_Unchanged: {unchanged} role(s) in this category._",
+        )
+        for child in view.children:
+            child.disabled = True  # type: ignore[attr-defined]
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class WeaponPickerView(discord.ui.View):
+    def __init__(
+        self,
+        category_key: str,
+        category_label: str,
+        pairs: list[tuple[str, discord.Role]],
+        member: discord.Member,
+    ) -> None:
+        super().__init__(timeout=180)
+        self.category_label = category_label
+        self.select = WeaponRoleSelect(category_key, category_label, pairs, member)
+        self.add_item(self.select)
+        self.add_item(WeaponSaveButton())
+
+
+class WeaponRolesPanelView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        for cat_key, label, _types in WEAPON_CATEGORIES:
+            self.add_item(WeaponCategoryButton(cat_key, label))
+
+
 # ── Cog + slash commands ─────────────────────────────────────────────────
 class ContentRoles(commands.Cog):
     """Posts and manages the self-assign content-role panel."""
@@ -352,6 +650,7 @@ class ContentRoles(commands.Cog):
         # Re-register the persistent panel view so the buttons keep working
         # across restarts.
         self.bot.add_view(ContentRolesPanelView())
+        self.bot.add_view(WeaponRolesPanelView())
 
     group = app_commands.Group(
         name="content-roles",
@@ -442,6 +741,144 @@ class ContentRoles(commands.Cog):
             ephemeral=True,
         )
 
+    @group.command(name="set-weapon-channel", description="Set the channel where the weapon-tree panel lives.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(channel="Text channel where the weapon-tree panel will be posted.")
+    async def set_weapon_channel(
+        self, interaction: discord.Interaction, channel: discord.TextChannel,
+    ) -> None:
+        self.bot.db.set_config(CFG_WEAPON_PANEL_CHANNEL, str(channel.id))
+        await interaction.response.send_message(
+            embed=success_embed(
+                "Weapon panel channel set",
+                f"The weapon-tree panel will live in {channel.mention}. "
+                "Run `/content-roles post-weapon-panel` next.",
+            ),
+            ephemeral=True,
+        )
+
+    @group.command(name="ensure-weapon-roles", description="Create or repair weapon-tree self-assign roles.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def ensure_weapon_roles(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from inside the server."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            existing, created = await _ensure_weapon_roles(guild, self.bot.db)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Can't create roles",
+                    "I need Manage Roles, and my bot role must be high enough in the role list.",
+                ),
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            error_log(f"weapon role creation failed: {exc!r}")
+            await interaction.followup.send(
+                embed=error_embed("Couldn't create roles", "Discord rejected the role update. Try again shortly."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            embed=success_embed(
+                "Weapon roles ready",
+                f"Created **{len(created)}** role(s); mapped **{len(existing)}** existing role(s).",
+            ),
+            ephemeral=True,
+        )
+
+    @group.command(name="post-weapon-panel", description="Post (or repost) the weapon-tree picker panel.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def post_weapon_panel(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from inside the server."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        db = self.bot.db
+        try:
+            await _ensure_weapon_roles(guild, db)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Can't create roles",
+                    "I need Manage Roles, and my bot role must be high enough in the role list.",
+                ),
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            error_log(f"weapon role creation failed: {exc!r}")
+            await interaction.followup.send(
+                embed=error_embed("Couldn't create roles", "Discord rejected the role update. Try again shortly."),
+                ephemeral=True,
+            )
+            return
+
+        chan_id = db.get_config(CFG_WEAPON_PANEL_CHANNEL) or db.get_config(CFG_PANEL_CHANNEL)
+        channel: discord.TextChannel | None = None
+        if chan_id:
+            ch = guild.get_channel(int(chan_id))
+            if isinstance(ch, discord.TextChannel):
+                channel = ch
+        if channel is None and isinstance(interaction.channel, discord.TextChannel):
+            channel = interaction.channel
+        if channel is None:
+            await interaction.followup.send(
+                embed=error_embed(
+                    "No channel set",
+                    "Run `/content-roles set-weapon-channel` first, or invoke this in a text channel.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        old_msg_id = db.get_config(CFG_WEAPON_PANEL_MESSAGE)
+        if old_msg_id:
+            try:
+                old = await channel.fetch_message(int(old_msg_id))
+                await old.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        try:
+            msg = await channel.send(
+                embed=_weapon_panel_embed(guild, db),
+                view=WeaponRolesPanelView(),
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=error_embed(
+                    "Can't post",
+                    f"I don't have permission to send messages in {channel.mention}.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        db.set_config(CFG_WEAPON_PANEL_CHANNEL, str(channel.id))
+        db.set_config(CFG_WEAPON_PANEL_MESSAGE, str(msg.id))
+        info_log(f"Posted weapon-roles panel to #{channel.name} ({channel.id}).")
+        await interaction.followup.send(
+            embed=success_embed(
+                "Weapon panel posted",
+                f"Members can now self-assign weapon-tree roles in {channel.mention}.",
+            ),
+            ephemeral=True,
+        )
+
     @group.command(name="show-config", description="Show which roles will appear in the panel.")
     @app_commands.default_permissions(manage_guild=True)
     async def show_config(self, interaction: discord.Interaction) -> None:
@@ -473,6 +910,38 @@ class ContentRoles(commands.Cog):
 
         embed = info_embed(
             f"Content-roles config · {total} role(s)",
+            "\n".join(lines),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @group.command(name="show-weapon-config", description="Show weapon-tree role mappings.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def show_weapon_config(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                embed=error_embed("Guild only", "Run this from inside the server."),
+                ephemeral=True,
+            )
+            return
+        db = self.bot.db
+        lines: list[str] = []
+        chan_id = db.get_config(CFG_WEAPON_PANEL_CHANNEL)
+        msg_id = db.get_config(CFG_WEAPON_PANEL_MESSAGE)
+        lines.append(f"**Weapon panel channel:** {('<#' + chan_id + '>') if chan_id else '_(unset)_'}")
+        lines.append(f"**Weapon panel message id:** {msg_id or '_(none)_'}")
+        lines.append("")
+        total = 0
+        for _key, label, weapon_keys in WEAPON_CATEGORIES:
+            pairs = _resolve_weapon_roles(guild, db, weapon_keys)
+            total += len(pairs)
+            if not pairs:
+                lines.append(f"__{label}__ — _(no roles configured)_")
+                continue
+            names = ", ".join(role.mention for _k, role in pairs)
+            lines.append(f"__{label}__ ({len(pairs)}): {names}")
+        embed = info_embed(
+            f"Weapon-role config · {total} role(s)",
             "\n".join(lines),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
