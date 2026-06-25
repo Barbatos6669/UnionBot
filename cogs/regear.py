@@ -28,6 +28,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import albion_api
+from cogs.loadout_chest import format_chest_item_display
 from debug import info_log, error_log
 from utils import error_embed, info_embed, success_embed
 
@@ -1115,7 +1116,7 @@ async def _do_resolve(
         # Floors at 0 if stock is short — surfacing the shortfall is the
         # quartermaster's problem, not the approval flow's.
         items_json = request.get("gear_items_json")
-        low_alerts: list[tuple[str, int]] = []
+        low_alerts: list[tuple[str, int, int, int]] = []
         if items_json:
             try:
                 items = json.loads(items_json)
@@ -1141,7 +1142,7 @@ async def _do_resolve(
                     )
                     decremented += 1
                     if 0 <= new_count <= threshold:
-                        low_alerts.append((base_id, int(new_count)))
+                        low_alerts.append((base_id, quality, enchant, int(new_count)))
                 if decremented:
                     info_log(
                         f"regear #{request_id}: decremented {decremented} "
@@ -1167,8 +1168,9 @@ async def _do_resolve(
                             chan = None
                     if isinstance(chan, discord.TextChannel):
                         lines = "\n".join(
-                            f"- `{iid}` \u2014 **{cnt}** left"
-                            for iid, cnt in low_alerts
+                            f"- **{format_chest_item_display(db, iid, quality=quality, enchant=enchant)}**"
+                            f" \u2014 **{cnt}** left"
+                            for iid, quality, enchant, cnt in low_alerts
                         )
                         embed = info_embed(
                             "Chest low-stock alert",

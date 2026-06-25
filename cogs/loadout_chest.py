@@ -72,6 +72,22 @@ _TIER_PREFIXES = (
     "Beginner's ", "Novice's ", "Journeyman's ", "Adept's ",
     "Expert's ", "Master's ", "Grandmaster's ", "Elder's ",
 )
+_SLOT_WORDS = {
+    "2H": "Two-Handed",
+    "ARMOR": "Armor",
+    "BAG": "Bag",
+    "CAPEITEM": "Cape",
+    "CLOTH": "Cloth",
+    "FW": "Faction",
+    "HEAD": "Head",
+    "LEATHER": "Leather",
+    "MEAL": "Food",
+    "MOUNT": "Mount",
+    "OFF": "Off-Hand",
+    "PLATE": "Plate",
+    "POTION": "Potion",
+    "SHOES": "Shoes",
+}
 
 
 def _strip_tier_prefix(name: str) -> str:
@@ -80,6 +96,69 @@ def _strip_tier_prefix(name: str) -> str:
         if name.startswith(p):
             return name[len(p):]
     return name
+
+
+def _fallback_item_name(item_id: str) -> str:
+    """Turn an Albion unique_name into a readable fallback label.
+
+    The item dictionary should be the source of truth, but officer alerts
+    should still be readable if the dictionary is stale or missing a row.
+    """
+    raw = str(item_id or "").strip().upper()
+    if not raw:
+        return "Unknown item"
+    enchant = ""
+    if "@" in raw:
+        raw, _, suffix = raw.partition("@")
+        enchant = f" +{suffix}" if suffix.isdigit() else f" @{suffix}"
+    parts = [p for p in raw.split("_") if p]
+    tier = parts.pop(0) if parts and parts[0].startswith("T") else ""
+    words = [_SLOT_WORDS.get(part, part.title()) for part in parts]
+    label = " ".join(([tier] if tier else []) + words).strip()
+    return f"{label or item_id}{enchant}".strip()
+
+
+def resolve_item_display_name(db, item_id: str) -> str:
+    """Resolve an Albion unique_name to its localized name for display."""
+    iid = str(item_id or "").strip().upper()
+    if not iid:
+        return "Unknown item"
+    try:
+        db.cursor.execute(
+            "SELECT name FROM items WHERE unique_name = ?",
+            (iid,),
+        )
+        row = db.cursor.fetchone()
+        if row and row["name"]:
+            return str(row["name"])
+    except Exception:
+        pass
+    return _fallback_item_name(iid)
+
+
+def format_chest_item_display(
+    db,
+    item_id: str,
+    *,
+    quality: int = 1,
+    enchant: int = 0,
+) -> str:
+    """Return a player-facing chest item label.
+
+    Example: ``Expert's Cleric Robe`` or ``Master's Armored Horse +1``.
+    Quality is only shown for non-normal quality because most chest rows are
+    Q1 and officers mainly need the actual item name at a glance.
+    """
+    name = resolve_item_display_name(db, item_id)
+    bits: list[str] = []
+    ench = int(enchant or 0)
+    qual = int(quality or 1)
+    if ench > 0:
+        bits.append(f"+{ench}")
+    if qual > 1:
+        bits.append(f"Q{qual}")
+    suffix = f" ({' '.join(bits)})" if bits else ""
+    return f"{name}{suffix}"
 
 
 def _resolve_item_input(db, raw: str) -> tuple[str | None, str | None]:
