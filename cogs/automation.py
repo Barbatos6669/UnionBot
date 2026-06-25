@@ -90,6 +90,12 @@ from cogs._event_reports import (
 
 _HOF_QUEUE_TABLE = "hall_of_fame_digest_queue"
 _DEFAULT_EVENT_RECONCILE_GRACE_MIN = 30
+_EVENT_REPORT_PENDING_RETRY_LIMIT = 2
+
+
+def _utc_iso(when: datetime.datetime) -> str:
+    aware = when.astimezone(datetime.timezone.utc).replace(microsecond=0)
+    return aware.replace(tzinfo=None).isoformat()
 
 
 def _ensure_hof_queue(db) -> None:
@@ -2696,6 +2702,86 @@ async def _reconcile_finished_events(bot: Bot) -> None:
                     pass
 
 
+async def _retry_pending_event_reports(bot: Bot) -> None:
+    """Retry event reports that were missing killboard or pricing data."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    pending_rows = bot.db.fetch_due_event_report_pending_data(
+        _utc_iso(now),
+        limit=_EVENT_REPORT_PENDING_RETRY_LIMIT,
+    )
+    if not pending_rows:
+        return
+
+    channel = _channel(bot, "automation_officer_channel_id")
+    if channel is None:
+        return
+
+    threshold_pct = _get_int_config(
+        bot.db, "automation_voice_attendance_min_pct", _DEFAULT_VOICE_PCT,
+    )
+    for row in pending_rows:
+        event_id = int(row.get("event_id") or 0)
+        if event_id <= 0:
+            continue
+        ev = bot.db.fetch_lfg_event(event_id)
+        if not ev or str(ev.get("status") or "").lower() == "cancelled":
+            bot.db.clear_event_report_pending_data(event_id)
+            continue
+
+        try:
+            graph_files: list[discord.File] = []
+            extra_embeds: list[discord.Embed] = []
+            embed = await build_event_report_embed(
+                bot,
+                ev,
+                threshold_pct=threshold_pct,
+                fetch_killboard=True,
+                create_regear_tasks=True,
+                include_graph=True,
+                graph_files=graph_files,
+                extra_embeds=extra_embeds,
+            )
+            if bot.db.fetch_event_report_pending_data(event_id):
+                continue
+
+            update = info_embed(
+                f"Event #{event_id} data updated",
+                (
+                    "The delayed killboard/pricing data is now available. "
+                    "This refreshed scorecard includes the newest gear-loss and regear details."
+                ),
+            )
+            report_embeds = [update, embed, *extra_embeds]
+            for idx, embed_batch in enumerate(batch_embeds_for_send(report_embeds)):
+                kwargs: dict = {
+                    "embeds": embed_batch,
+                    "allowed_mentions": discord.AllowedMentions.none(),
+                }
+                if idx == 0:
+                    kwargs["view"] = build_event_report_view(event_id)
+                    if graph_files:
+                        kwargs["file"] = graph_files[0]
+                await channel.send(**kwargs)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            error_log(f"event report pending-data post failed for #{event_id}: {exc!r}")
+            attempts = int(row.get("attempts") or 0)
+            delay = min(60, 10 * (attempts + 1))
+            bot.db.upsert_event_report_pending_data(
+                event_id,
+                reason=f"Discord post failed: {type(exc).__name__}",
+                next_retry_at=_utc_iso(now + datetime.timedelta(minutes=delay)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"event report pending-data retry failed for #{event_id}: {exc!r}")
+            attempts = int(row.get("attempts") or 0)
+            delay = min(60, 10 * (attempts + 1))
+            bot.db.upsert_event_report_pending_data(
+                event_id,
+                reason=f"Retry failed: {type(exc).__name__}",
+                next_retry_at=_utc_iso(now + datetime.timedelta(minutes=delay)),
+            )
+
+
 # ── Cog ─────────────────────────────────────────────────────────────────────
 
 class Automation(commands.Cog):
@@ -2744,6 +2830,10 @@ class Automation(commands.Cog):
             await _reconcile_finished_events(self.bot)
         except Exception as exc:  # noqa: BLE001
             error_log(f"minute_tick reconcile failed: {exc!r}")
+        try:
+            await _retry_pending_event_reports(self.bot)
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"minute_tick pending event report retry failed: {exc!r}")
 
     @minute_tick.before_loop
     async def _before_minute(self) -> None:

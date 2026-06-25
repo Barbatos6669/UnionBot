@@ -2304,6 +2304,23 @@ class Database:
                 updated_at  TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
             )
         ''')
+        # Event reports can finish before killboard/pricing data is ready.
+        # This queue lets automation retry silently and post a clean update later.
+        self.execute('''
+            CREATE TABLE IF NOT EXISTS event_report_pending_data (
+                event_id        INTEGER PRIMARY KEY,
+                reason          TEXT NOT NULL,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                first_seen_at   TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+                last_attempt_at TEXT,
+                next_retry_at   TEXT NOT NULL,
+                updated_at      TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+            )
+        ''')
+        self.execute(
+            'CREATE INDEX IF NOT EXISTS ix_event_report_pending_due '
+            'ON event_report_pending_data(next_retry_at)'
+        )
         # SOP / policy snapshots — content_hash compared daily for drift.
         self.execute('''
             CREATE TABLE IF NOT EXISTS policy_snapshots (
@@ -3394,6 +3411,72 @@ class Database:
         except sqlite3.Error as e:
             debug.error_log(f"fetch_event_loot_summary error: {e}")
             return None
+
+    def fetch_event_report_pending_data(self, event_id: int) -> dict | None:
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                "SELECT * FROM event_report_pending_data WHERE event_id = ?",
+                (int(event_id),),
+            )
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_event_report_pending_data error: {e}")
+            return None
+
+    def upsert_event_report_pending_data(
+        self,
+        event_id: int,
+        *,
+        reason: str,
+        next_retry_at: str,
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO event_report_pending_data
+                (event_id, reason, attempts, last_attempt_at, next_retry_at, updated_at)
+            VALUES (?, ?, 1, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(event_id) DO UPDATE SET
+                reason = excluded.reason,
+                attempts = attempts + 1,
+                last_attempt_at = CURRENT_TIMESTAMP,
+                next_retry_at = excluded.next_retry_at,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(event_id), str(reason or "data pending"), str(next_retry_at)),
+        )
+
+    def fetch_due_event_report_pending_data(
+        self,
+        now_iso: str,
+        *,
+        limit: int = 3,
+    ) -> list[dict]:
+        try:
+            if not self.connection:
+                self.connect()
+            self.cursor.execute(
+                """
+                SELECT *
+                  FROM event_report_pending_data
+                 WHERE next_retry_at <= ?
+                 ORDER BY next_retry_at ASC
+                 LIMIT ?
+                """,
+                (str(now_iso), max(1, int(limit))),
+            )
+            return [dict(r) for r in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            debug.error_log(f"fetch_due_event_report_pending_data error: {e}")
+            return []
+
+    def clear_event_report_pending_data(self, event_id: int) -> None:
+        self.execute(
+            "DELETE FROM event_report_pending_data WHERE event_id = ?",
+            (int(event_id),),
+        )
 
     # ── Policy snapshots (SOP drift) ───────────────────────────────────────
 

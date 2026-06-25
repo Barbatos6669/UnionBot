@@ -51,6 +51,39 @@ ALBIONBB_MAX_BATTLES = 30
 ALBIONBB_MIN_PLAYERS = 1
 GEAR_PRICING_TIMEOUT_SECONDS = 25
 EMBED_TOTAL_SAFE_LIMIT = 5600
+REPORT_DATA_RETRY_BASE_MINUTES = 10
+REPORT_DATA_RETRY_MAX_MINUTES = 60
+
+
+def _utc_iso(when: dt.datetime) -> str:
+    aware = when.astimezone(UTC).replace(microsecond=0)
+    return aware.replace(tzinfo=None).isoformat()
+
+
+def _queue_event_report_pending_data(
+    db,
+    event_id: int,
+    *,
+    reason: str,
+) -> tuple[dt.datetime | None, int]:
+    """Remember that an event report needs a later data retry."""
+    try:
+        pending = db.fetch_event_report_pending_data(event_id)
+        attempts = int((pending or {}).get("attempts") or 0)
+        delay = min(
+            REPORT_DATA_RETRY_MAX_MINUTES,
+            REPORT_DATA_RETRY_BASE_MINUTES * (attempts + 1),
+        )
+        retry_at = dt.datetime.now(UTC) + dt.timedelta(minutes=delay)
+        db.upsert_event_report_pending_data(
+            event_id,
+            reason=reason,
+            next_retry_at=_utc_iso(retry_at),
+        )
+        return retry_at, attempts + 1
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"event report pending-data queue failed for #{event_id}: {exc!r}")
+        return None, 0
 
 
 def _append_paged_fields(
@@ -637,6 +670,9 @@ async def build_event_report_embed(
     scanned = 0
     errors = 0
     pricing_note = ""
+    pending_reason = ""
+    pending_retry_at: dt.datetime | None = None
+    pending_attempt = 0
     if fetch_killboard and confirmed_ids:
         try:
             albionbb_summary = await _fetch_albionbb_event_window(
@@ -664,6 +700,7 @@ async def build_event_report_embed(
                 "Official killboard lookup timed out; AlbionBB battle intel is still "
                 "shown, but regear detail may need manual review."
             )
+            pending_reason = "Official killboard lookup timed out."
             errors += 1
             error_log(
                 f"event report official killboard lookup timed out for event #{event_id} "
@@ -674,6 +711,7 @@ async def build_event_report_embed(
                 "Official killboard lookup failed; AlbionBB battle intel is still "
                 "shown, but regear detail may need manual review."
             )
+            pending_reason = "Official killboard lookup failed."
             errors += 1
             error_log(
                 f"event report official killboard lookup failed for event #{event_id}: {exc!r}"
@@ -689,6 +727,7 @@ async def build_event_report_embed(
                     "Gear pricing timed out; death rows are still listed, "
                     "but value needs manual review."
                 )
+                pending_reason = "Gear pricing timed out."
                 error_log(
                     f"event report gear pricing timed out for event #{event_id} "
                     f"after {GEAR_PRICING_TIMEOUT_SECONDS}s"
@@ -698,7 +737,21 @@ async def build_event_report_embed(
                     "Gear pricing failed; death rows are still listed, "
                     "but value needs manual review."
                 )
+                pending_reason = "Gear pricing failed."
                 error_log(f"event report gear pricing failed for event #{event_id}: {exc!r}")
+
+    if fetch_killboard:
+        if pending_reason:
+            pending_retry_at, pending_attempt = _queue_event_report_pending_data(
+                db,
+                event_id,
+                reason=pending_reason,
+            )
+        else:
+            try:
+                db.clear_event_report_pending_data(event_id)
+            except Exception as exc:  # noqa: BLE001
+                error_log(f"event report pending-data clear failed for #{event_id}: {exc!r}")
 
     kill_fame_value = sum(int(k.get("fame") or 0) for k in kills)
     death_fame_value = sum(int(d.get("fame") or 0) for d in deaths)
@@ -806,8 +859,8 @@ async def build_event_report_embed(
         value_lines.append(f"Estimated gear loss: **{_fmt_num(est_gear_loss)}**")
         if manual_death_values:
             value_lines.append(f"Deaths needing manual price check: **{manual_death_values}**")
-        if pricing_note:
-            value_lines.append(pricing_note)
+    if pricing_note:
+        value_lines.append(pricing_note)
     if not fetch_killboard:
         value_lines.append("Killboard lookup skipped for this report.")
     elif errors:
@@ -828,6 +881,25 @@ async def build_event_report_embed(
         "Note: Albion killboard fame is not silver loot value; gear loss is best-effort market pricing."
     )
     embed.add_field(name="Combat / Value", value=_clamp("\n".join(value_lines)), inline=False)
+
+    if pending_reason:
+        pending_lines = [
+            f"Waiting on: **{pending_reason}**",
+            "The bot queued an automatic retry and will post an updated scorecard when the data lands.",
+            "Attendance, signups, loot input, and AlbionBB battle intel can still be reviewed now.",
+        ]
+        if pending_retry_at is not None:
+            pending_lines.append(
+                f"Next retry: {_discord_ts(pending_retry_at, 'R')} "
+                f"({_discord_ts(pending_retry_at, 't')})."
+            )
+        if pending_attempt:
+            pending_lines.append(f"Retry attempt queued: **{pending_attempt}**")
+        embed.add_field(
+            name="Gear Loss Data Pending",
+            value=_clamp("\n".join(pending_lines)),
+            inline=False,
+        )
 
     if gross_loot:
         loot_lines = [
