@@ -402,7 +402,7 @@ class RegistrationCleanupConfirmKickView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         bot: Bot = interaction.client  # type: ignore[assignment]
-        from cogs.automation import _run_registration_cleanup_kicks
+        from cogs._automation_registration import _run_registration_cleanup_kicks
 
         embed = await _run_registration_cleanup_kicks(
             bot, interaction.guild, actor=interaction.user, days=self.days,
@@ -452,7 +452,7 @@ class RegistrationCleanupView(discord.ui.View):
             )
             return
         bot: Bot = interaction.client  # type: ignore[assignment]
-        from cogs.automation import _build_registration_cleanup_embed
+        from cogs._automation_registration import _build_registration_cleanup_embed
 
         await interaction.response.edit_message(
             embed=_build_registration_cleanup_embed(bot, interaction.guild),
@@ -479,7 +479,7 @@ class RegistrationCleanupView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         bot: Bot = interaction.client  # type: ignore[assignment]
-        from cogs.automation import _run_registration_cleanup_nudges
+        from cogs._automation_registration import _run_registration_cleanup_nudges
 
         embed = await _run_registration_cleanup_nudges(
             bot, interaction.guild, actor=interaction.user,
@@ -505,11 +505,11 @@ class RegistrationCleanupView(discord.ui.View):
             )
             return
         bot: Bot = interaction.client  # type: ignore[assignment]
-        from cogs.automation import (
+        from cogs._automation_helpers import (
             _DEFAULT_UNVERIFIED_KICK_DAYS,
-            _collect_registration_cleanup_targets,
             _get_int_config,
         )
+        from cogs._automation_registration import _collect_registration_cleanup_targets
 
         days = _get_int_config(
             bot.db, "automation_unverified_kick_days",
