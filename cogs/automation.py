@@ -652,6 +652,26 @@ _UNVERIFIED_KICK_PROTECTED_ROLE_NAMES = frozenset(
 )
 
 
+def _member_has_unverified_cleanup_protection(member: discord.Member) -> bool:
+    role_names = {getattr(r, "name", "") for r in getattr(member, "roles", [])}
+    return bool(role_names & _UNVERIFIED_KICK_PROTECTED_ROLE_NAMES)
+
+
+def _collect_stale_unverified_role_members(guild: discord.Guild) -> list[discord.Member]:
+    """Members who are registered/protected but still carry Unverified."""
+    role = discord.utils.get(guild.roles, name="Unverified")
+    if role is None:
+        return []
+    members: list[discord.Member] = []
+    for member in role.members:
+        if member.bot or member == guild.owner:
+            continue
+        if _member_has_unverified_cleanup_protection(member):
+            members.append(member)
+    members.sort(key=lambda m: str(m).lower())
+    return members
+
+
 def _collect_unverified_kick_targets(
     guild: discord.Guild, days: int,
 ) -> list[tuple[discord.Member, int]]:
@@ -670,8 +690,7 @@ def _collect_unverified_kick_targets(
         perms = member.guild_permissions
         if perms.manage_guild or perms.administrator:
             continue
-        role_names = {getattr(r, "name", "") for r in getattr(member, "roles", [])}
-        if role_names & _UNVERIFIED_KICK_PROTECTED_ROLE_NAMES:
+        if _member_has_unverified_cleanup_protection(member):
             continue
         if not member.joined_at:
             continue
@@ -702,7 +721,29 @@ async def _run_unverified_kicks(bot: Bot) -> None:
     officer_channel = _channel(bot, "automation_officer_channel_id")
     kicked: list[str] = []
     failed: list[str] = []
+    cleaned: list[str] = []
+    cleanup_failed: list[str] = []
     for guild in bot.guilds:
+        unverified_role = discord.utils.get(guild.roles, name="Unverified")
+        if unverified_role is not None:
+            for member in _collect_stale_unverified_role_members(guild):
+                try:
+                    await member.remove_roles(
+                        unverified_role,
+                        reason="Cleanup stale Unverified role on registered/protected member",
+                    )
+                    cleaned.append(f"{member} ({member.id})")
+                    info_log(f"Removed stale Unverified role from {member} ({member.id}).")
+                except discord.Forbidden:
+                    cleanup_failed.append(f"{member} — missing role permissions")
+                    error_log(
+                        f"Stale Unverified cleanup blocked for {member} "
+                        "(role hierarchy?)."
+                    )
+                except discord.HTTPException as exc:
+                    cleanup_failed.append(f"{member} — {exc}")
+                    error_log(f"Stale Unverified cleanup HTTP error for {member}: {exc!r}")
+
         targets = _collect_unverified_kick_targets(guild, days)
         for member, age in targets:
             reason = (
@@ -737,25 +778,39 @@ async def _run_unverified_kicks(bot: Bot) -> None:
                 failed.append(f"{member} — {exc}")
                 error_log(f"Auto-kick HTTP error for {member}: {exc!r}")
 
-    if not kicked and not failed:
+    if not kicked and not failed and not cleaned and not cleanup_failed:
         return
     if officer_channel is None:
         info_log(
-            f"Unverified-kick: {len(kicked)} kicked, {len(failed)} failed; "
+            f"Unverified-kick: {len(kicked)} kicked, {len(failed)} failed, "
+            f"{len(cleaned)} stale roles cleaned, {len(cleanup_failed)} cleanup failed; "
             "no officer channel configured."
         )
         return
     lines: list[str] = []
+    if cleaned:
+        lines.append(f"**Stale Unverified role cleaned ({len(cleaned)}):**")
+        lines.extend(f"• {item}" for item in cleaned[:10])
+        if len(cleaned) > 10:
+            lines.append(f"…and {len(cleaned) - 10} more.")
     if kicked:
+        if lines:
+            lines.append("")
         lines.append(f"**Kicked ({len(kicked)}):**")
         lines.extend(f"• {k}" for k in kicked[:25])
         if len(kicked) > 25:
             lines.append(f"…and {len(kicked) - 25} more.")
     if failed:
-        lines.append(f"\n**Failed ({len(failed)}):**")
+        lines.append(f"\n**Kick failed ({len(failed)}):**")
         lines.extend(f"• {f}" for f in failed[:10])
+    if cleanup_failed:
+        lines.append(f"\n**Stale role cleanup failed ({len(cleanup_failed)}):**")
+        lines.extend(f"• {f}" for f in cleanup_failed[:10])
     embed = discord.Embed(
-        title=f"🚪  Unverified auto-kick — {len(kicked)} removed",
+        title=(
+            f"🚪  Unverified cleanup — {len(kicked)} kicked, "
+            f"{len(cleaned)} stale cleaned"
+        ),
         description="\n".join(lines),
         color=discord.Color.dark_red(),
     )
@@ -3395,12 +3450,21 @@ class AutomationGroup(
             )
             return
         targets = _collect_unverified_kick_targets(guild, days)
+        stale_roles = _collect_stale_unverified_role_members(guild)
         if not targets:
+            detail = (
+                f"No one has been Unverified > **{days} days**. ✅\n"
+                f"Auto-kick is currently **{'ON' if enabled else 'OFF'}**."
+            )
+            if stale_roles:
+                detail += (
+                    f"\n\nThe next cleanup will also remove stale **Unverified** "
+                    f"from **{len(stale_roles)}** registered/protected member(s)."
+                )
             await interaction.followup.send(
                 embed=info_embed(
                     "Nothing to kick",
-                    f"No one has been Unverified > **{days} days**. ✅\n"
-                    f"Auto-kick is currently **{'ON' if enabled else 'OFF'}**.",
+                    detail,
                 ),
                 ephemeral=True,
             )
@@ -3419,7 +3483,8 @@ class AutomationGroup(
         embed.set_footer(
             text=(
                 f"Threshold: {days}d · Auto-kick is "
-                f"{'ON' if enabled else 'OFF'}"
+                f"{'ON' if enabled else 'OFF'} · "
+                f"{len(stale_roles)} stale role(s) will be cleaned"
             ),
         )
         await interaction.followup.send(embed=embed, ephemeral=True)

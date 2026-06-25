@@ -22,6 +22,9 @@ Important:
 - Users can still be approved as Guest/manual review if officers are satisfied.
 - Members should not upload random screenshots outside the registration flow.
   If they do, tell them to click Register again and follow the flow.
+- Unverified members older than the configured cleanup threshold can be removed
+  automatically. If a registered member still has a stale Unverified role, the
+  cleanup sweep removes that stale role instead of kicking them.
 
 After registration:
 

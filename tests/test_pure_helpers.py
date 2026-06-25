@@ -32,7 +32,7 @@ from cogs._content_config import (
     season_point_focus_recommendation_keys,
 )
 from cogs._content_views import _availability_slot_heading, _availability_timer_window
-from cogs._event_reports import _suppressed_auto_regear_lines
+from cogs._event_report_regear import suppressed_auto_regear_lines
 from cogs._lfg_config import PrimeSlot, display_slot_label, prime_slot_display_label
 from cogs._lfg_helpers import (
     _event_access_role_name,
@@ -71,7 +71,10 @@ from cogs.ai_assistant import (
     _utc_hour_window,
     _weekday_name_sqlite,
 )
-from cogs.automation import _collect_unverified_kick_targets
+from cogs.automation import (
+    _collect_stale_unverified_role_members,
+    _collect_unverified_kick_targets,
+)
 from cogs.utc_clock import _utc_clock_name
 from cogs.applications import _compute_fame
 from cogs.dashboard import _health_emoji, _pct, _queue_score, _safe_int, _score_from_pct
@@ -164,7 +167,13 @@ class _KickRole:
 class _KickMember:
     bot = False
 
-    def __init__(self, *roles: _KickRole, joined_days_ago: int = 8) -> None:
+    def __init__(
+        self,
+        *roles: _KickRole,
+        joined_days_ago: int = 8,
+        name: str = "member",
+    ) -> None:
+        self.name = name
         self.roles = list(roles)
         self.guild_permissions = _Perms()
         self.joined_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
@@ -172,6 +181,9 @@ class _KickMember:
         )
         for role in roles:
             role.members.append(self)
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class _KickGuild:
@@ -310,8 +322,22 @@ def test_unverified_kick_targets_skip_stale_unverified_on_registered_members() -
     assert targets == [(eligible, 9)]
 
 
+def test_stale_unverified_role_members_collects_registered_members_only() -> None:
+    unverified = _KickRole("Unverified")
+    verified = _KickRole("Verified")
+    member = _KickRole("Member")
+
+    stale_verified = _KickMember(unverified, verified, joined_days_ago=90, name="zeta")
+    stale_member = _KickMember(unverified, member, joined_days_ago=90, name="alpha")
+    _KickMember(unverified, joined_days_ago=90, name="plain")
+
+    stale = _collect_stale_unverified_role_members(_KickGuild([unverified, verified, member]))
+
+    assert stale == [stale_member, stale_verified]
+
+
 def test_event_report_regear_requests_are_consolidated_not_fanned_out() -> None:
-    lines = _suppressed_auto_regear_lines(
+    lines = suppressed_auto_regear_lines(
         [
             {"estimated_value": 1_500_000},
             {"estimated_value": 0},

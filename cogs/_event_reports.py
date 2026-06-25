@@ -23,6 +23,10 @@ from cogs._event_report_format import (
     discord_ts as _discord_ts,
     fmt_num as _fmt_num,
 )
+from cogs._event_report_regear import (
+    regear_death_line,
+    suppressed_auto_regear_lines,
+)
 from cogs._event_report_time import event_window as _event_window
 from cogs._event_report_time import parse_dt as _parse_dt
 from cogs._event_report_ui import build_event_report_view, register_persistent_event_report_views
@@ -170,47 +174,6 @@ def _append_paged_fields(
             idx += 1
         embed.set_footer(text=f"Continuation page {page} - no regear rows omitted.")
         embeds.append(embed)
-
-
-def _regear_death_line(
-    death: dict,
-    *,
-    profiles: dict[str, dict],
-    signup_ids: set[str],
-) -> str:
-    did = str(death.get("discord_id") or "")
-    name = _member_name(profiles.get(did), did)
-    url = death.get("killboard_url") or ""
-    linked = f"[{name}]({url})" if url else name
-    loc = death.get("location") or "unknown zone"
-    killer = death.get("killer_name") or "Unknown"
-    signed = "yes" if did in signup_ids else "no"
-    est_value = int(death.get("estimated_value") or 0)
-    value_text = (
-        f"Est gear: **{_fmt_num(est_value)}**"
-        if est_value > 0 else
-        "Est gear: **manual pricing needed**"
-    )
-    return (
-        f"{linked} - {_fmt_num(death.get('fame'))} fame, {loc}, "
-        f"killed by {killer}. Signup: {signed}; VC: yes. {value_text}."
-    )
-
-
-def _suppressed_auto_regear_lines(deaths: list[dict]) -> list[str]:
-    priced = sum(1 for death in deaths if int(death.get("estimated_value") or 0) > 0)
-    manual = max(0, len(deaths) - priced)
-    total = sum(int(death.get("estimated_value") or 0) for death in deaths)
-    lines = [
-        "Individual regear request cards are **not** auto-created from event reconcile.",
-        "Use the consolidated **Regear Review** list and continuation embed(s) instead.",
-        f"Deaths listed: **{len(deaths)}**",
-        f"Estimated value listed: **{_fmt_num(total)}**",
-    ]
-    if manual:
-        lines.append(f"Manual pricing needed: **{manual}** death(s)")
-    lines.append("Manual/player-submitted regear requests still use the normal regear board.")
-    return lines
 
 
 def _row_before(db, discord_id: str, when: dt.datetime) -> dict | None:
@@ -696,11 +659,6 @@ async def _fetch_albionbb_event_window(
     }
 
 
-def _member_name(profile: dict | None, discord_id: str) -> str:
-    profile = profile or {}
-    return str(profile.get("albion_name") or profile.get("username") or f"<@{discord_id}>")
-
-
 def _attendance_sets(db, event_id: int, threshold_pct: int) -> dict:
     signups = db.fetch_lfg_signups(event_id)
     snapshots = db.fetch_voice_snapshot_summary(event_id)
@@ -1066,7 +1024,7 @@ async def build_event_report_embed(
 
     if deaths:
         regear_lines = [
-            _regear_death_line(death, profiles=profiles, signup_ids=signup_ids)
+            regear_death_line(death, profiles=profiles, signup_ids=signup_ids)
             for death in deaths
         ]
         est_total = sum(int(death.get("estimated_value") or 0) for death in deaths)
@@ -1104,7 +1062,7 @@ async def build_event_report_embed(
     if create_regear_tasks and deaths:
         embed.add_field(
             name="Regear Requests",
-            value=_clamp("\n".join(_suppressed_auto_regear_lines(deaths))),
+            value=_clamp("\n".join(suppressed_auto_regear_lines(deaths))),
             inline=False,
         )
 
