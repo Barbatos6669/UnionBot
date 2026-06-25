@@ -322,7 +322,7 @@ def build_event_scorecard_graph(
             _empty_panel(ax_stats, "No stat movement captured yet")
         else:
             ax_stats.bar(stat_labels, stat_values, color=stat_colors, width=0.62, zorder=3)
-            ax_stats.set_title("Fame / Stat Growth", color=TEXT_COLOR, fontsize=11, fontweight="700", loc="left")
+            ax_stats.set_title("Profile Stat Movement", color=TEXT_COLOR, fontsize=11, fontweight="700", loc="left")
             ax_stats.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(_fmt_compact))
             _style_axes(ax_stats)
             _annotate_vertical_bars(ax_stats, stat_values)

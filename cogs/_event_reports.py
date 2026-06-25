@@ -174,6 +174,30 @@ def _row_before(db, discord_id: str, when: dt.datetime) -> dict | None:
         return None
 
 
+def _row_after(db, discord_id: str, start: dt.datetime, end: dt.datetime) -> dict | None:
+    try:
+        if not db.connection:
+            db.connect()
+        db.cursor.execute(
+            """
+            SELECT kill_fame, death_fame, pve_total, gather_all,
+                   crafting_fame, average_item_power, recorded_at
+              FROM player_stats_history
+             WHERE discord_id = ?
+               AND datetime(recorded_at) >= datetime(?)
+               AND datetime(recorded_at) <= datetime(?)
+             ORDER BY datetime(recorded_at) ASC, id ASC
+             LIMIT 1
+            """,
+            (str(discord_id), start.isoformat(), end.isoformat()),
+        )
+        row = db.cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as exc:  # noqa: BLE001
+        error_log(f"event report history lookup failed for {discord_id}: {exc!r}")
+        return None
+
+
 def _profile_current_row(profile: dict | None) -> dict | None:
     if not profile:
         return None
@@ -208,7 +232,12 @@ def _event_stat_deltas(
     for did in sorted(attendee_ids):
         profile = profiles.get(did) or {}
         before = _row_before(db, did, report_start)
-        after = _row_before(db, did, stat_end) or _profile_current_row(profile)
+        after = _row_after(db, did, report_end, stat_end)
+        if not after:
+            current = _profile_current_row(profile)
+            current_at = _parse_dt(current.get("recorded_at")) if current else None
+            if current_at and report_end <= current_at <= stat_end:
+                after = current
         if not before or not after:
             continue
         usable += 1
@@ -808,7 +837,11 @@ async def build_event_report_embed(
     if not stat_lines:
         stat_lines.append("No stat movement captured in stored snapshots yet.")
     stat_lines.append(f"Players with usable stat snapshots: **{usable_stat_players}/{confirmed_count}**")
-    embed.add_field(name="Stat Growth", value=_clamp("\n".join(stat_lines)), inline=False)
+    embed.add_field(
+        name="Profile Stat Movement",
+        value=_clamp("\n".join(stat_lines)),
+        inline=False,
+    )
 
     bb = albionbb_summary or {}
     if bb.get("enabled"):
@@ -1035,6 +1068,8 @@ async def build_event_report_embed(
     notes = [
         f"Registered attendees scanned: **{min(registered_count, KILLBOARD_MAX_PLAYERS)}/{registered_count}**",
         f"Report window includes prep and review: {_discord_ts(report_start, 't')} - {_discord_ts(report_end, 't')}.",
+        "Profile stat movement uses the nearest stored Albion profile snapshots around the event; "
+        "PvE/gather/craft numbers are context, not exact event-only proof.",
     ]
     if registered_count > KILLBOARD_MAX_PLAYERS:
         notes.append(f"Killboard scan capped at {KILLBOARD_MAX_PLAYERS} players to avoid API spam.")
