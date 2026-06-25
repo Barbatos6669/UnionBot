@@ -9,6 +9,8 @@ import datetime
 
 import discord
 
+from time_utils import utc_now_iso, utc_now_naive
+
 # ── config keys ─────────────────────────────────────────────────────────────
 CFG_BOARD_CHANNEL  = "bounty_board_channel_id"
 CFG_REVIEW_CHANNEL = "bounty_review_channel_id"
@@ -100,7 +102,7 @@ def fmt_silver(n: int) -> str:
 
 
 def now_iso() -> str:
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat(sep=" ")
+    return utc_now_iso(sep=" ")
 
 
 def parse_deadline(raw: str | None) -> str | None:
@@ -120,7 +122,7 @@ def parse_deadline(raw: str | None) -> str | None:
     units = {"m": 60, "h": 3600, "d": 86400}
     if len(s) >= 2 and s[-1] in units and s[:-1].isdigit():
         secs = int(s[:-1]) * units[s[-1]]
-        dt = datetime.datetime.utcnow() + datetime.timedelta(seconds=secs)
+        dt = utc_now_naive() + datetime.timedelta(seconds=secs)
         return dt.replace(microsecond=0).isoformat(sep=" ")
 
     try:

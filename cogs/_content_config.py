@@ -20,6 +20,7 @@ from cogs._lfg_config import (
     prime_slot_display_label,
     utc_datetime,
 )
+from time_utils import utc_now_naive
 
 # ── config keys ─────────────────────────────────────────────────────────────
 CFG_CHANNEL          = "content_curator_channel_id"
@@ -304,4 +305,4 @@ def is_officer(member: discord.Member, db) -> bool:
 
 
 def now_utc() -> dt.datetime:
-    return dt.datetime.utcnow().replace(microsecond=0)
+    return utc_now_naive().replace(microsecond=0)
