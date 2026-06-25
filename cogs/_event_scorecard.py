@@ -515,7 +515,7 @@ def build_event_scorecard_graph(
             ax_players.invert_yaxis()
             ax_players.set_xlim(0, max(values) * 1.25)
             ax_players.set_title(
-                "Top AlbionBB Impact" if bb_players else "Top Attendee Movement",
+                "Top Player Impact" if bb_players else "Top Attendee Movement",
                 color=TEXT_COLOR,
                 fontsize=11,
                 fontweight="700",
