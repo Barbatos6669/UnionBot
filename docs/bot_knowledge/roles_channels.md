@@ -19,6 +19,15 @@ Common identity roles:
   warfare, diplomacy, or shared events with other guilds/alliances.
 - Inactive and Alumni should be limited to channels appropriate for their status.
 
+Voice access:
+
+- Unverified/unregistered members should only have lobby-style access: rules,
+  registration, guild application, and help/ticket channels.
+- Voice channels are for registered home-guild members, alliance members,
+  registered guests, or officer-approved temporary voice guests.
+- If someone is disconnected from voice, tell them to register first or ask for
+  help if the registration flow is stuck.
+
 Staff/economy roles:
 
 - Most staff roles are reserved for HomeGuild members because they can

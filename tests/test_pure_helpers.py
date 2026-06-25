@@ -78,6 +78,7 @@ from cogs.help import _can_add_field, _embed_text_size
 from cogs.market import _route_risk
 from cogs.openai_moderation import _moderation_threshold_decision
 from cogs.regear import _split_enchant
+from cogs.voice import _member_has_registered_voice_access
 
 
 class _NickTagDb:
@@ -123,6 +124,33 @@ class _NickTagDb:
 
     def fetch_all_guilds(self):
         return list(self.guilds.values())
+
+
+class _Role:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _Perms:
+    administrator = False
+    manage_guild = False
+    move_members = False
+
+
+class _Member:
+    def __init__(self, *role_names: str) -> None:
+        self.roles = [_Role(name) for name in role_names]
+        self.guild_permissions = _Perms()
+
+
+class _VoiceAccessDb:
+    def __init__(self, extra_roles: str = "") -> None:
+        self.extra_roles = extra_roles
+
+    def get_config(self, key: str) -> str | None:
+        if key == "voice_extra_access_roles":
+            return self.extra_roles
+        return None
 
 
 # ── ai assistant quick answers ────────────────────────────────────────────
@@ -226,6 +254,17 @@ def test_ai_live_context_helpers_format_time_and_intent() -> None:
     assert _weekday_name_sqlite(3) == "Wed"
     assert _utc_hour_window(23) == "23:00-00:00 UTC"
     assert _discord_timestamp("2026-06-12T20:00:00+00:00", "R") == "<t:1781294400:R>"
+
+
+def test_voice_access_requires_registered_or_approved_role() -> None:
+    assert not _member_has_registered_voice_access(_Member("Unverified"), _VoiceAccessDb())
+    assert _member_has_registered_voice_access(_Member("Verified"), _VoiceAccessDb())
+    assert _member_has_registered_voice_access(_Member("HomeGuild"), _VoiceAccessDb())
+    assert _member_has_registered_voice_access(_Member("Guest"), _VoiceAccessDb())
+    assert _member_has_registered_voice_access(
+        _Member("Approved Voice Guest"),
+        _VoiceAccessDb("Approved Voice Guest"),
+    )
 
 
 def test_quick_workflow_answer_routes_server_categories() -> None:

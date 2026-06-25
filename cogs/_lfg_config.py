@@ -590,7 +590,11 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
         ("Officer", ("manage_messages",), ()),
     ],
     "🐏 Martlock Faction": [
-        ("@everyone", ("read_messages", "read_message_history", "connect", "speak"), ()),
+        ("@everyone", ("read_messages", "read_message_history"), ("connect", "speak")),
+        ("Faction Warfare", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
+        ("Guest", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
+        ("Alliance", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
+        ("HomeGuild", ("read_messages", "send_messages", "read_message_history", "connect", "speak"), ()),
         ("Officer", ("manage_messages",), ()),
     ],
     "⚔️ Content Ops": [
@@ -665,7 +669,7 @@ LAYOUT_CATEGORY_OVERWRITES: dict[str, list[tuple[str, tuple[str, ...], tuple[str
     "🤝 Guests": [
         # Visible to everyone (no read deny). Posting limited to verified
         # tiers so randoms can't spam.
-        ("@everyone", ("read_messages", "read_message_history"), ("send_messages",)),
+        ("@everyone", ("read_messages", "read_message_history"), ("send_messages", "connect", "speak")),
         ("Guest", ("read_messages", "send_messages", "connect", "speak"), ()),
         ("Alliance", ("read_messages", "send_messages", "connect", "speak"), ()),
         ("HomeGuild", ("read_messages", "send_messages", "connect", "speak"), ()),

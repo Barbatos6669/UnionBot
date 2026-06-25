@@ -66,8 +66,7 @@ PROFILES: dict[str, JTCProfile] = {
         category_config="faction_jtc_category_id",
         trigger_name="Join to Create - Faction",
         room_prefix="Faction Room - ",
-        allowed_roles=("Faction Warfare", "Alliance", "HomeGuild"),
-        allow_everyone=True,
+        allowed_roles=("Faction Warfare", "Guest", "Alliance", "HomeGuild"),
     ),
     "content": JTCProfile(
         key="content",

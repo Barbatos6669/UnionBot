@@ -24,7 +24,24 @@ import datetime
 import discord
 from discord.ext import commands, tasks
 
+from config import LIFECYCLE_ROLES, STAFF_ROLES
 from debug import info_log, error_log
+
+
+REGISTERED_VOICE_ROLES = frozenset(
+    {
+        "Verified",
+        "HomeGuild",
+        "Alliance",
+        "Guest",
+        "Ambassador",
+        "Commander",
+        "Guild Leader",
+        *(role for role in LIFECYCLE_ROLES if role not in {"Inactive", "Alumni"}),
+        *STAFF_ROLES,
+    }
+)
+VOICE_GUARD_NOTIFY_COOLDOWN = datetime.timedelta(hours=6)
 
 
 def _now() -> datetime.datetime:
@@ -48,6 +65,50 @@ def _iter_day_buckets(start: datetime.datetime, end: datetime.datetime):
         cur = bucket_end
 
 
+def _parse_configured_voice_roles(raw: str | None) -> set[str]:
+    """Officer-configurable extra role names allowed into voice."""
+    if not raw:
+        return set()
+    return {
+        part.strip()
+        for part in str(raw).replace("\n", ",").split(",")
+        if part.strip()
+    }
+
+
+def _member_has_registered_voice_access(member: discord.Member, db=None) -> bool:
+    """Voice is for registered members or explicitly approved temporary guests."""
+    perms = getattr(member, "guild_permissions", None)
+    if perms and (perms.administrator or perms.manage_guild or perms.move_members):
+        return True
+
+    role_names = {getattr(role, "name", "") for role in getattr(member, "roles", [])}
+    if role_names & REGISTERED_VOICE_ROLES:
+        return True
+
+    if db is not None:
+        extra_names = _parse_configured_voice_roles(
+            db.get_config("voice_extra_access_roles")
+        )
+        if role_names & extra_names:
+            return True
+
+    return False
+
+
+def _channel_mention_by_name(guild: discord.Guild, *needles: str) -> str | None:
+    lowered = tuple(needle.lower() for needle in needles if needle)
+    for channel in guild.text_channels:
+        name = channel.name.lower()
+        if all(needle in name for needle in lowered):
+            return channel.mention
+    return None
+
+
+def _is_voice_like(channel: discord.abc.Connectable | None) -> bool:
+    return isinstance(channel, (discord.VoiceChannel, discord.StageChannel))
+
+
 class Voice(commands.Cog):
     """Track per-member voice-channel time."""
 
@@ -55,6 +116,7 @@ class Voice(commands.Cog):
         self.bot: Bot = bot
         # discord_id -> last accounted-for timestamp (UTC)
         self._sessions: dict[str, datetime.datetime] = {}
+        self._voice_guard_notified_at: dict[str, datetime.datetime] = {}
         info_log(f"Initialized {self.__class__.__name__} cog.")
 
     async def cog_load(self) -> None:
@@ -83,6 +145,58 @@ class Voice(commands.Cog):
                 self._persist_span(did, started, now)
                 self._sessions[did] = now
 
+    async def _notify_voice_restricted(self, member: discord.Member) -> None:
+        did = str(member.id)
+        now = _now()
+        last = self._voice_guard_notified_at.get(did)
+        if last is not None and now - last < VOICE_GUARD_NOTIFY_COOLDOWN:
+            return
+        self._voice_guard_notified_at[did] = now
+
+        register = _channel_mention_by_name(member.guild, "register")
+        help_channel = (
+            _channel_mention_by_name(member.guild, "help")
+            or _channel_mention_by_name(member.guild, "ticket")
+        )
+        route = []
+        if register:
+            route.append(f"register in {register}")
+        if help_channel:
+            route.append(f"ask for help in {help_channel}")
+        route_text = " or ".join(route) if route else "register or ask an officer for help"
+
+        try:
+            await member.send(
+                "Voice channels are restricted to registered members and approved "
+                f"temporary guests. Please {route_text} before joining voice."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def _disconnect_unregistered_voice(
+        self,
+        member: discord.Member,
+        channel: discord.VoiceChannel | discord.StageChannel,
+    ) -> bool:
+        if _member_has_registered_voice_access(member, self.bot.db):
+            return False
+        try:
+            await member.move_to(
+                None,
+                reason="Voice restricted to registered members / approved guests",
+            )
+            info_log(
+                f"voice_guard: disconnected unregistered member {member.id} "
+                f"from {channel.id} ({channel.name})."
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            error_log(
+                f"voice_guard: failed to disconnect {member.id} "
+                f"from {channel.id}: {exc!r}"
+            )
+        await self._notify_voice_restricted(member)
+        return True
+
     # ── listeners ──────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
@@ -98,6 +212,12 @@ class Voice(commands.Cog):
         is_in = after.channel is not None
         did = str(member.id)
         now = _now()
+        if _is_voice_like(after.channel):
+            if await self._disconnect_unregistered_voice(member, after.channel):
+                started = self._sessions.pop(did, None)
+                if started:
+                    self._persist_span(did, started, now)
+                return
         # Joined voice (or moved between channels we don't track separately).
         if not was_in and is_in:
             self._sessions[did] = now
@@ -127,9 +247,11 @@ class Voice(commands.Cog):
         try:
             now = _now()
             for guild in self.bot.guilds:
-                for vc in guild.voice_channels:
+                for vc in [*guild.voice_channels, *guild.stage_channels]:
                     for m in vc.members:
                         if m.bot:
+                            continue
+                        if await self._disconnect_unregistered_voice(m, vc):
                             continue
                         self._sessions[str(m.id)] = now
         except Exception as exc:  # noqa: BLE001
