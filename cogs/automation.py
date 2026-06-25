@@ -632,7 +632,24 @@ async def _apply_vc_inactive_targets(
 #   * never kick anyone with manage_guild (officers/admins)
 #   * never kick the guild owner
 #   * skip if joined_at is unknown (defensive)
-#   * skip anyone without the Unverified role (verified members are immune)
+#   * skip anyone without the Unverified role
+#   * skip anyone who also has a registered/protected role, because stale
+#     Unverified roles should not remove real members
+
+
+_UNVERIFIED_KICK_PROTECTED_ROLE_NAMES = frozenset(
+    {
+        "Verified",
+        "HomeGuild",
+        "Alliance",
+        "Guest",
+        "Ambassador",
+        "Commander",
+        "Guild Leader",
+        *LIFECYCLE_ROLES,
+        *STAFF_ROLES,
+    }
+)
 
 
 def _collect_unverified_kick_targets(
@@ -652,6 +669,9 @@ def _collect_unverified_kick_targets(
             continue
         perms = member.guild_permissions
         if perms.manage_guild or perms.administrator:
+            continue
+        role_names = {getattr(r, "name", "") for r in getattr(member, "roles", [])}
+        if role_names & _UNVERIFIED_KICK_PROTECTED_ROLE_NAMES:
             continue
         if not member.joined_at:
             continue

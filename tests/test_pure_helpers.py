@@ -70,6 +70,7 @@ from cogs.ai_assistant import (
     _utc_hour_window,
     _weekday_name_sqlite,
 )
+from cogs.automation import _collect_unverified_kick_targets
 from cogs.utc_clock import _utc_clock_name
 from cogs.applications import _compute_fame
 from cogs.dashboard import _health_emoji, _pct, _queue_score, _safe_int, _score_from_pct
@@ -151,6 +152,32 @@ class _VoiceAccessDb:
         if key == "voice_extra_access_roles":
             return self.extra_roles
         return None
+
+
+class _KickRole:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.members = []
+
+
+class _KickMember:
+    bot = False
+
+    def __init__(self, *roles: _KickRole, joined_days_ago: int = 8) -> None:
+        self.roles = list(roles)
+        self.guild_permissions = _Perms()
+        self.joined_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+            days=joined_days_ago,
+        )
+        for role in roles:
+            role.members.append(self)
+
+
+class _KickGuild:
+    owner = object()
+
+    def __init__(self, roles: list[_KickRole]) -> None:
+        self.roles = roles
 
 
 # ── ai assistant quick answers ────────────────────────────────────────────
@@ -265,6 +292,21 @@ def test_voice_access_requires_registered_or_approved_role() -> None:
         _Member("Approved Voice Guest"),
         _VoiceAccessDb("Approved Voice Guest"),
     )
+
+
+def test_unverified_kick_targets_skip_stale_unverified_on_registered_members() -> None:
+    unverified = _KickRole("Unverified")
+    verified = _KickRole("Verified")
+    member = _KickRole("Member")
+
+    eligible = _KickMember(unverified, joined_days_ago=9)
+    _KickMember(unverified, verified, joined_days_ago=90)
+    _KickMember(unverified, member, joined_days_ago=90)
+    _KickMember(unverified, joined_days_ago=2)
+
+    targets = _collect_unverified_kick_targets(_KickGuild([unverified, verified, member]), 7)
+
+    assert targets == [(eligible, 9)]
 
 
 def test_quick_workflow_answer_routes_server_categories() -> None:
