@@ -29,3 +29,11 @@ Eval notes:
 - Run `python3 scripts/ai_eval.py --verbose` before/after knowledge changes.
 - Add a new eval case whenever the bot gives a wrong or weird answer that we
   want to prevent from coming back.
+
+Retrieval notes:
+
+- The bot builds a cached in-memory section index from these markdown files.
+- Ranking uses token/phrase matches, file hints, source-tier nudges, and
+  rare-term keyword weighting.
+- Keep headings specific. A heading like `Deadwater Eel` or `Loot Splits` helps
+  more than a generic heading like `Notes`.

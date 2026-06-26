@@ -22,13 +22,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from cogs.ai_assistant import (  # noqa: E402
-    KNOWLEDGE_DIR,
-    _knowledge_phrases,
-    _knowledge_tokens,
-    _markdown_knowledge_sections,
     _quick_albion_answer,
     _quick_workflow_answer,
-    _score_knowledge_section,
+    _rank_knowledge_sections,
 )
 
 DEFAULT_CASE_FILE = REPO_ROOT / "docs" / "bot_knowledge" / "ai_eval_cases.json"
@@ -99,28 +95,13 @@ def _has_none(answer: str, needles: list[str]) -> tuple[bool, list[str]]:
 
 
 def top_retrieval_docs(question: str, *, top_k: int) -> list[tuple[int, str, str]]:
-    query_tokens = _knowledge_tokens(question)
-    query_phrases = _knowledge_phrases(question)
-    rows: list[tuple[int, str, str]] = []
-    for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
-        if path.name.lower() == "readme.md":
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for filename, heading, section in _markdown_knowledge_sections(path.name, content):
-            score = _score_knowledge_section(
-                filename=filename,
-                heading=heading,
-                text=section,
-                query_tokens=query_tokens,
-                query_phrases=query_phrases,
-            )
-            if score > 0:
-                rows.append((score, filename, heading))
-    rows.sort(key=lambda row: (-row[0], row[1], row[2]))
-    return rows[: max(1, int(top_k))]
+    return [
+        (score, filename, heading)
+        for score, filename, heading, _text in _rank_knowledge_sections(
+            question,
+            limit=max(1, int(top_k)),
+        )
+    ]
 
 
 def evaluate_case(case: dict[str, Any]) -> EvalResult:

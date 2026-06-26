@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import datetime
 import os
 import re
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +69,7 @@ MAX_KNOWLEDGE_SNIPPETS = 10
 MAX_KNOWLEDGE_SECTION_CHARS = 1800
 KNOWLEDGE_SOURCE_TIER_WEIGHTS = {"a": 4, "b": 2, "c": 0, "d": -1}
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[1] / "docs" / "bot_knowledge"
+_KNOWLEDGE_SECTION_CACHE: tuple[float, list["KnowledgeSection"]] | None = None
 PUBLIC_MODES = {"off", "onboarding", "standin", "offhours", "mentions"}
 AI_PROVIDERS = {"openai", "ollama"}
 SKIP_SERVER_MAP_CATEGORIES = ("archive", "server stats", "leadership")
@@ -466,6 +470,25 @@ def _knowledge_phrases(value: str) -> set[str]:
     return phrases
 
 
+@dataclass(frozen=True)
+class KnowledgeSection:
+    filename: str
+    heading: str
+    text: str
+    tokens: frozenset[str]
+    heading_tokens: frozenset[str]
+
+
+def _make_knowledge_section(filename: str, heading: str, text: str) -> KnowledgeSection:
+    return KnowledgeSection(
+        filename=filename,
+        heading=heading,
+        text=text,
+        tokens=frozenset(_knowledge_tokens(text)),
+        heading_tokens=frozenset(_knowledge_tokens(heading)),
+    )
+
+
 def _markdown_knowledge_sections(filename: str, content: str) -> list[tuple[str, str, str]]:
     """Split a markdown knowledge file into small answerable sections.
 
@@ -517,6 +540,51 @@ def _markdown_knowledge_sections(filename: str, content: str) -> list[tuple[str,
     return sections
 
 
+def _knowledge_dir_mtime(knowledge_dir: Path = KNOWLEDGE_DIR) -> float:
+    if not knowledge_dir.exists():
+        return 0.0
+    mtimes: list[float] = []
+    for path in knowledge_dir.glob("*.md"):
+        if path.name.lower() == "readme.md":
+            continue
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(mtimes, default=0.0)
+
+
+def _load_knowledge_sections(
+    knowledge_dir: Path = KNOWLEDGE_DIR,
+    *,
+    use_cache: bool = True,
+) -> list[KnowledgeSection]:
+    global _KNOWLEDGE_SECTION_CACHE
+    cache_key = _knowledge_dir_mtime(knowledge_dir)
+    if use_cache and knowledge_dir == KNOWLEDGE_DIR and _KNOWLEDGE_SECTION_CACHE:
+        cached_key, cached_sections = _KNOWLEDGE_SECTION_CACHE
+        if cached_key == cache_key:
+            return cached_sections
+
+    sections: list[KnowledgeSection] = []
+    if not knowledge_dir.exists():
+        return sections
+    for path in sorted(knowledge_dir.glob("*.md")):
+        if path.name.lower() == "readme.md":
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            error_log(f"AI knowledge read failed for {path}: {exc!r}")
+            continue
+        for filename, heading, section_text in _markdown_knowledge_sections(path.name, content):
+            sections.append(_make_knowledge_section(filename, heading, section_text))
+
+    if use_cache and knowledge_dir == KNOWLEDGE_DIR:
+        _KNOWLEDGE_SECTION_CACHE = (cache_key, sections)
+    return sections
+
+
 def _knowledge_source_tier_weight(text: str) -> int:
     """Small retrieval nudge for markdown chunks with explicit source tier tags.
 
@@ -557,6 +625,66 @@ def _score_knowledge_section(
     if score > 0:
         score += _knowledge_source_tier_weight(text)
     return score
+
+
+def _idf_score(token: str, *, total_sections: int, document_frequency: Counter[str]) -> float:
+    # A tiny BM25-style weight: rare Albion terms such as "deadwater" or
+    # "disarray" should matter more than common words like "content".
+    df = max(1, int(document_frequency.get(token, 0)))
+    return math.log((total_sections + 1) / df) + 1.0
+
+
+def _rank_knowledge_sections(
+    question: str,
+    *,
+    sections: list[KnowledgeSection] | None = None,
+    limit: int | None = None,
+) -> list[tuple[int, str, str, str]]:
+    if sections is None:
+        sections = _load_knowledge_sections()
+    if not sections:
+        return []
+
+    query_tokens = _knowledge_tokens(question)
+    query_phrases = _knowledge_phrases(question)
+    document_frequency: Counter[str] = Counter()
+    for section in sections:
+        for token in section.tokens | section.heading_tokens | KNOWLEDGE_FILE_HINTS.get(section.filename, set()):
+            document_frequency[token] += 1
+
+    total_sections = len(sections)
+    ranked: list[tuple[int, str, str, str]] = []
+    for section in sections:
+        base_score = _score_knowledge_section(
+            filename=section.filename,
+            heading=section.heading,
+            text=section.text,
+            query_tokens=query_tokens,
+            query_phrases=query_phrases,
+        )
+        if base_score <= 0:
+            continue
+        body_hits = query_tokens & section.tokens
+        heading_hits = query_tokens & section.heading_tokens
+        hint_hits = query_tokens & KNOWLEDGE_FILE_HINTS.get(section.filename, set())
+        keyword_score = 0.0
+        keyword_score += 1.5 * sum(
+            _idf_score(token, total_sections=total_sections, document_frequency=document_frequency)
+            for token in body_hits
+        )
+        keyword_score += 3.0 * sum(
+            _idf_score(token, total_sections=total_sections, document_frequency=document_frequency)
+            for token in heading_hits
+        )
+        keyword_score += 1.0 * sum(
+            _idf_score(token, total_sections=total_sections, document_frequency=document_frequency)
+            for token in hint_hits
+        )
+        score = base_score + int(round(keyword_score))
+        ranked.append((score, section.filename, section.heading, section.text))
+
+    ranked.sort(key=lambda row: (-row[0], row[1], row[2]))
+    return ranked[:limit] if limit is not None else ranked
 
 
 def _channel_is_privateish(channel: discord.abc.GuildChannel | discord.Thread) -> bool:
@@ -1541,40 +1669,27 @@ class AIAssistant(commands.Cog):
         )
 
     def _knowledge_file_context(self, question: str) -> str:
-        # This is a tiny local retriever. It reads markdown files from
-        # docs/bot_knowledge, scores sections against the question, and includes
+        # This is a tiny local retriever. It indexes markdown files from
+        # docs/bot_knowledge, ranks sections against the question, and includes
         # only the best matches. That gives us "training-like" behavior while
         # keeping the knowledge editable by humans.
         if not KNOWLEDGE_DIR.exists():
             return "No markdown knowledge base is installed."
 
-        query_tokens = _knowledge_tokens(question)
-        query_phrases = _knowledge_phrases(question)
-        snippets: list[tuple[int, str, str, str]] = []
-        for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
-            if path.name.lower() == "readme.md":
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-            except OSError as exc:
-                error_log(f"AI knowledge read failed for {path}: {exc!r}")
-                continue
-            for filename, heading, section in _markdown_knowledge_sections(path.name, content):
-                score = _score_knowledge_section(
-                    filename=filename,
-                    heading=heading,
-                    text=section,
-                    query_tokens=query_tokens,
-                    query_phrases=query_phrases,
-                )
-                snippets.append((score, filename, heading, section))
-
-        if not snippets:
+        sections = _load_knowledge_sections()
+        if not sections:
             return "No markdown knowledge files could be read."
 
-        matched = [row for row in sorted(snippets, key=lambda row: (-row[0], row[1], row[2])) if row[0] > 0]
+        matched = _rank_knowledge_sections(question, sections=sections)
         if not matched:
-            matched = [row for row in snippets if row[1] == "server_overview.md"] or snippets[:1]
+            fallback_sections = [
+                section for section in sections
+                if section.filename == "server_overview.md"
+            ]
+            matched = [
+                (1, section.filename, section.heading, section.text)
+                for section in fallback_sections
+            ]
 
         selected: list[tuple[int, str, str, str]] = []
         per_file: dict[str, int] = {}
