@@ -27,6 +27,7 @@ from cogs._bounties_roads import (
     parse_road_core_price,
     parse_road_core_proof,
     road_core_proof_text,
+    road_core_screenshot_url,
     road_core_title,
 )
 from cogs._content_config import (
@@ -803,6 +804,8 @@ def test_roads_core_proof_round_trip() -> None:
     assert parsed["screenshot"] == "https://cdn.discordapp.com/core.png"
     assert parsed["party"] == "@A @B"
     assert parsed["note"] == "won fight on exit"
+    assert road_core_screenshot_url(proof) == "https://cdn.discordapp.com/core.png"
+    assert road_core_screenshot_url("screenshot: not-a-url") is None
 
 
 def test_roads_core_image_attachment_url_accepts_pasted_images() -> None:

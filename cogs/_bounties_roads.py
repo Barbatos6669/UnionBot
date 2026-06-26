@@ -135,6 +135,14 @@ def parse_road_core_proof(proof: str | None) -> dict[str, str]:
     return out
 
 
+def road_core_screenshot_url(proof: str | None) -> str | None:
+    parsed = parse_road_core_proof(proof)
+    url = str(parsed.get("screenshot") or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    return None
+
+
 def image_attachment_url(message) -> str | None:
     image_ext = (".png", ".jpg", ".jpeg", ".webp", ".gif")
     for attachment in getattr(message, "attachments", []) or []:

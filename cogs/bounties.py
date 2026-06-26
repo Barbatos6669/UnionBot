@@ -58,6 +58,7 @@ from cogs._bounties_roads import (
     image_attachment_url,
     parse_road_core_price,
     parse_road_core_proof,
+    road_core_screenshot_url,
     road_core_proof_text,
     road_core_title,
 )
@@ -1366,9 +1367,6 @@ class Bounties(commands.Cog):
         if not party:
             party = f"Submitted by <@{interaction.user.id}>; party visible in screenshot."
 
-        with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-            await proof_message.delete()
-
         await self._submit_roads_core_bounty(
             interaction,
             color=color,
@@ -1376,6 +1374,8 @@ class Bounties(commands.Cog):
             party=party,
             note=f"Captured from pasted image. Reward: {_fmt_silver(reward)} silver.",
         )
+        with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+            await proof_message.delete()
 
     async def _submit_roads_core_bounty(
         self,
@@ -1601,6 +1601,9 @@ class Bounties(commands.Cog):
         if not b:
             return
         proof_preview = (b.get("proof") or "").strip()
+        screenshot_url = road_core_screenshot_url(proof_preview)
+        if screenshot_url:
+            proof_preview = proof_preview.replace(screenshot_url, "(embedded below)")
         if len(proof_preview) > 1000:
             proof_preview = proof_preview[:997] + "..."
         embed = discord.Embed(
@@ -1613,6 +1616,13 @@ class Bounties(commands.Cog):
             ),
             color=discord.Color.gold(),
         )
+        if screenshot_url:
+            embed.set_image(url=screenshot_url)
+            embed.add_field(
+                name="Screenshot",
+                value=f"Preview embedded below. If Discord does not render it, [open screenshot]({screenshot_url}).",
+                inline=False,
+            )
         view = discord.ui.View(timeout=None)
         view.add_item(BountyApproveButton(bounty_id, label="Approve & Pay"))
         view.add_item(BountyRejectButton(bounty_id, label="Send Back"))
