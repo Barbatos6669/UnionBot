@@ -7,10 +7,18 @@ context.
 Editing notes:
 
 - Keep facts short and practical.
+- Tag durable source quality with `Source tier: A/B/C/D` inside the relevant
+  section when it matters. A = official Albion, B = wiki/mechanics fallback,
+  C = community/tooling, D = weak hearsay/opinion.
+- Prefer official Albion sources for rules, patches, and current systems. Use
+  the wiki for mechanics and community guides for practical play patterns.
 - Prefer workflows over long speeches.
+- Put broad gameplay Q&A in `albion_member_field_manual.md`; put exact guild
+  workflow/policy in the specific UnionBot files.
 - Do not add exact Albion item stats unless you plan to maintain them after
   patches.
 - If a policy needs officer approval, say so clearly.
+- Keep risk-watch, blacklist, theft, regear disputes, loot disputes, and external
+  guild warnings officer-only and evidence-first.
 - If a fact can change in-game, tell the bot to point members to current
   in-game UI, patch notes, or an officer.
-

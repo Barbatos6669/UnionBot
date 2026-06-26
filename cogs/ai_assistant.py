@@ -64,6 +64,7 @@ MAX_KNOWLEDGE_DOCS = 8
 MAX_KNOWLEDGE_CHARS = 8500
 MAX_KNOWLEDGE_SNIPPETS = 10
 MAX_KNOWLEDGE_SECTION_CHARS = 1800
+KNOWLEDGE_SOURCE_TIER_WEIGHTS = {"a": 4, "b": 2, "c": 0, "d": -1}
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[1] / "docs" / "bot_knowledge"
 PUBLIC_MODES = {"off", "onboarding", "standin", "offhours", "mentions"}
 AI_PROVIDERS = {"openai", "ollama"}
@@ -301,6 +302,7 @@ KNOWLEDGE_FILE_HINTS = {
     },
     "albion_research_sources_2026.md": {"source", "sources", "research", "current", "patch", "wiki", "database", "official"},
     "albion_sources_index.md": {"source", "sources", "wiki", "official", "reference", "verify", "patch", "current", "update", "research"},
+    "albion_kb_quality_policy.md": {"knowledge", "source", "sources", "official", "wiki", "community", "policy", "quality", "patch", "safety", "officer", "risk", "confidence", "hallucination"},
     "albion_terms_glossary.md": {"glossary", "term", "terms", "slang", "focus", "fire", "focusfire", "oc", "overcharge", "disarray", "bubble", "outlaw", "ip", "spec", "softcap", "hardcap", "rrr", "lp", "learning", "points", "fame", "credit", "clap", "bomb", "kite", "peel", "reset", "engage", "purge", "pierce", "cleanse", "rat", "gank", "dismount", "execute", "trash", "rate", "shrine"},
     "albion_roads_avalonian_content.md": {"roads", "avalonian", "ava", "portal", "route", "scout", "chest", "core"},
     "albion_roads_portal_scouting_reference.md": {"roads", "avalonian", "ava", "sso", "route", "portal", "ttl", "scout", "charges"},
@@ -515,6 +517,23 @@ def _markdown_knowledge_sections(filename: str, content: str) -> list[tuple[str,
     return sections
 
 
+def _knowledge_source_tier_weight(text: str) -> int:
+    """Small retrieval nudge for markdown chunks with explicit source tier tags.
+
+    This is intentionally a tie-breaker, not a replacement for relevance.
+    A source-tier marker should help a matching official/wiki chunk outrank a
+    matching community note; it should not make unrelated policy text appear in
+    answers.
+    """
+    match = re.search(
+        r"(?im)^\s*(?:source[_ -]?tier|tier)\s*:\s*([abcd])\b",
+        str(text or ""),
+    )
+    if not match:
+        return 0
+    return KNOWLEDGE_SOURCE_TIER_WEIGHTS.get(match.group(1).lower(), 0)
+
+
 def _score_knowledge_section(
     *,
     filename: str,
@@ -535,6 +554,8 @@ def _score_knowledge_section(
         heading_lc = heading.lower()
         score += 7 * sum(1 for phrase in query_phrases if phrase in text_lc)
         score += 5 * sum(1 for phrase in query_phrases if phrase in heading_lc)
+    if score > 0:
+        score += _knowledge_source_tier_weight(text)
     return score
 
 

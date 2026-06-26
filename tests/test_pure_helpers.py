@@ -73,6 +73,7 @@ from cogs.ai_assistant import (
     KNOWLEDGE_FILE_HINTS,
     _discord_timestamp,
     _knowledge_phrases,
+    _knowledge_source_tier_weight,
     _knowledge_tokens,
     _markdown_knowledge_sections,
     _question_contains,
@@ -284,6 +285,50 @@ Use buy orders and sell orders.
     )
     assert scored[-1][1] == "Registration rescue"
     assert "click Register again" in scored[-1][2]
+
+
+def test_ai_knowledge_source_tier_is_only_a_relevance_tiebreaker() -> None:
+    official = """Source tier: A
+
+Official patch notes say to verify current values before answering exact
+weapon numbers.
+"""
+    weak = """Source tier: D
+
+Someone said exact weapon numbers are always the same.
+"""
+    unrelated = """Source tier: A
+
+Registration screenshots go in the registration channel.
+"""
+    query_tokens = _knowledge_tokens("current weapon numbers patch notes")
+    query_phrases = _knowledge_phrases("current weapon numbers patch notes")
+
+    official_score = _score_knowledge_section(
+        filename="official.md",
+        heading="Patch notes",
+        text=official,
+        query_tokens=query_tokens,
+        query_phrases=query_phrases,
+    )
+    weak_score = _score_knowledge_section(
+        filename="weak.md",
+        heading="Patch notes",
+        text=weak,
+        query_tokens=query_tokens,
+        query_phrases=query_phrases,
+    )
+    unrelated_score = _score_knowledge_section(
+        filename="registration.md",
+        heading="Registration",
+        text=unrelated,
+        query_tokens=query_tokens,
+        query_phrases=query_phrases,
+    )
+
+    assert _knowledge_source_tier_weight(official) > _knowledge_source_tier_weight(weak)
+    assert official_score > weak_score
+    assert unrelated_score == 0
 
 
 def test_ai_knowledge_terms_cover_event_weapon_and_inactivity_workflows() -> None:
