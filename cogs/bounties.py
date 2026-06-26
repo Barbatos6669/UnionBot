@@ -54,7 +54,9 @@ from cogs._bounties_roads import (
     ROAD_CORE_TITLE_PREFIX,
     RoadsCoreBoardView,
     RoadsCoreColorView,
+    RoadsCorePriceModal,
     image_attachment_url,
+    parse_road_core_price,
     parse_road_core_proof,
     road_core_proof_text,
     road_core_title,
@@ -120,6 +122,7 @@ from cogs._bounties_views import (
 class Bounties(commands.Cog):
     KILL_BOUNTY_CFG_PREFIX = "bounty_enemy_target:"
     ROADS_CORE_TITLE_PREFIX = ROAD_CORE_TITLE_PREFIX
+    ROADS_CORE_REWARD_CFG_PREFIX = "roads_core_reward_"
     PAYMENT_REMINDER_DEFAULT_HOURS = 24
     PAYMENT_REMINDER_DEFAULT_DAYS = 14
     PAYMENT_REMINDER_BUTTON_LIMIT = 5
@@ -1065,6 +1068,90 @@ class Bounties(commands.Cog):
         )
         return [dict(r) for r in db.cursor.fetchall()]
 
+    def _roads_core_rewards(self) -> dict[str, int]:
+        db = self.bot.db  # type: ignore[attr-defined]
+        rewards: dict[str, int] = {}
+        for color, default_amount in ROAD_CORE_REWARDS.items():
+            raw = db.get_config(f"{self.ROADS_CORE_REWARD_CFG_PREFIX}{color}")
+            try:
+                amount = int(raw) if raw is not None else int(default_amount)
+            except (TypeError, ValueError):
+                amount = int(default_amount)
+            rewards[color] = max(1, min(amount, MAX_REWARD))
+        return rewards
+
+    async def _open_roads_core_price_modal(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                embed=error_embed("Server only", "Use this from inside the guild server."),
+                ephemeral=True,
+            )
+            return
+        if not _is_officer(interaction.user):
+            await interaction.response.send_message(
+                embed=error_embed("Permission denied", "Only officers can change Roads core payouts."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(RoadsCorePriceModal(self._roads_core_rewards()))
+
+    async def _update_roads_core_prices(
+        self,
+        interaction: discord.Interaction,
+        values: dict[str, str],
+    ) -> None:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                embed=error_embed("Server only", "Use this from inside the guild server."),
+                ephemeral=True,
+            )
+            return
+        if not _is_officer(interaction.user):
+            await interaction.response.send_message(
+                embed=error_embed("Permission denied", "Only officers can change Roads core payouts."),
+                ephemeral=True,
+            )
+            return
+
+        parsed: dict[str, int] = {}
+        errors: list[str] = []
+        for color in ROAD_CORE_REWARDS:
+            amount, err = parse_road_core_price(values.get(color, ""))
+            if err or amount is None:
+                errors.append(f"{ROAD_CORE_EMOJIS[color]} {color.title()}: {err or 'invalid amount'}")
+                continue
+            if amount > MAX_REWARD:
+                errors.append(f"{ROAD_CORE_EMOJIS[color]} {color.title()}: max is {_fmt_silver(MAX_REWARD)}.")
+                continue
+            parsed[color] = amount
+
+        if errors:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Invalid payout",
+                    "\n".join(errors[:8]),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        db = self.bot.db  # type: ignore[attr-defined]
+        for color, amount in parsed.items():
+            db.set_config(f"{self.ROADS_CORE_REWARD_CFG_PREFIX}{color}", str(amount))
+        await self._refresh_roads_core_board(create=True)
+        lines = [
+            f"{ROAD_CORE_EMOJIS[color]} **{color.title()}** — 🪙 **{_fmt_silver(amount)}**"
+            for color, amount in parsed.items()
+        ]
+        await interaction.followup.send(
+            embed=success_embed(
+                "Roads core payouts updated",
+                "\n".join(lines),
+            ),
+            ephemeral=True,
+        )
+
     def _roads_core_deadline(self) -> str:
         db = self.bot.db  # type: ignore[attr-defined]
         configured = str(db.get_config("roads_core_bounty_deadline") or "").strip()
@@ -1111,9 +1198,10 @@ class Bounties(commands.Cog):
             color=discord.Color.purple(),
             timestamp=now,
         )
+        rewards = self._roads_core_rewards()
         payout_lines = [
             f"{ROAD_CORE_EMOJIS[color]} **{color.title()} core** — 🪙 **{_fmt_silver(amount)}**"
-            for color, amount in ROAD_CORE_REWARDS.items()
+            for color, amount in rewards.items()
         ]
         embed.add_field(name="Roads Hideout Payouts", value="\n".join(payout_lines), inline=False)
         embed.add_field(
@@ -1121,7 +1209,7 @@ class Bounties(commands.Cog):
             value=(
                 "Click **Submit Core**, choose the core color, then paste/upload the screenshot "
                 "directly in this channel. Put party members in the same message if they are not visible in the screenshot. "
-                "Officers approve the payout from the review channel."
+                "Officers approve the payout from the review channel. Officers can use **Edit Prices** on this board when the push changes."
             ),
             inline=False,
         )
@@ -1217,7 +1305,7 @@ class Bounties(commands.Cog):
                 "Pick the core color",
                 "Choose the Roads core color first. After that, paste or upload the screenshot directly in this channel.",
             ),
-            view=RoadsCoreColorView(),
+            view=RoadsCoreColorView(self._roads_core_rewards()),
             ephemeral=True,
         )
 
@@ -1234,7 +1322,8 @@ class Bounties(commands.Cog):
             )
             return
 
-        reward = int(ROAD_CORE_REWARDS[color])
+        rewards = self._roads_core_rewards()
+        reward = int(rewards[color])
         await interaction.response.send_message(
             embed=info_embed(
                 f"{ROAD_CORE_EMOJIS[color]} {color.title()} core selected",
@@ -1300,7 +1389,7 @@ class Bounties(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True, thinking=True)
         db = self.bot.db  # type: ignore[attr-defined]
-        reward = int(ROAD_CORE_REWARDS[color])
+        reward = int(self._roads_core_rewards()[color])
         proof = road_core_proof_text(
             color=color,
             screenshot=screenshot,

@@ -12,11 +12,13 @@ ROAD_CORE_REWARDS: dict[str, int] = {
     "green": 1_000_000,
     "blue": 3_000_000,
     "purple": 5_000_000,
+    "gold": 10_000_000,
 }
 ROAD_CORE_EMOJIS: dict[str, str] = {
     "green": "🟢",
     "blue": "🔵",
     "purple": "🟣",
+    "gold": "🟡",
 }
 
 
@@ -38,11 +40,64 @@ def normalize_road_core_color(raw: str) -> tuple[str | None, str | None]:
         "purp": "purple",
         "p": "purple",
         "t8": "purple",
+        "gold": "gold",
+        "yellow": "gold",
+        "y": "gold",
+        "t10": "gold",
     }
     color = aliases.get(text)
     if color:
         return color, None
-    return None, "Use `green`, `blue`, or `purple`."
+    return None, "Use `green`, `blue`, `purple`, or `gold`."
+
+
+def parse_road_core_price(raw: str) -> tuple[int | None, str | None]:
+    text = (
+        str(raw or "")
+        .strip()
+        .lower()
+        .replace(",", "")
+        .replace("_", "")
+    )
+    text = text.replace("silver", "").strip()
+    if not text:
+        return None, "Enter a silver amount."
+
+    parts = text.split()
+    if len(parts) == 2:
+        number_text, suffix = parts
+    elif len(parts) == 1:
+        number_text = parts[0]
+        suffix = ""
+        for candidate in ("million", "mil", "m", "thousand", "k"):
+            if number_text.endswith(candidate) and number_text != candidate:
+                suffix = candidate
+                number_text = number_text[: -len(candidate)]
+                break
+    else:
+        return None, "Use a value like `1m`, `3000000`, or `10 million`."
+
+    multipliers = {
+        "": 1,
+        "s": 1,
+        "silver": 1,
+        "k": 1_000,
+        "thousand": 1_000,
+        "m": 1_000_000,
+        "mil": 1_000_000,
+        "million": 1_000_000,
+    }
+    multiplier = multipliers.get(suffix)
+    if multiplier is None:
+        return None, "Supported suffixes are `k`, `m`, `thousand`, and `million`."
+    try:
+        number = float(number_text)
+    except ValueError:
+        return None, "Enter a valid number."
+    amount = int(number * multiplier)
+    if amount <= 0:
+        return None, "Amount must be greater than zero."
+    return amount, None
 
 
 def road_core_title(color: str) -> str:
@@ -91,27 +146,19 @@ def image_attachment_url(message) -> str | None:
 
 
 class RoadsCoreColorSelect(discord.ui.Select):
-    def __init__(self) -> None:
-        options = [
-            discord.SelectOption(
-                label="Green core",
-                value="green",
-                emoji=ROAD_CORE_EMOJIS["green"],
-                description=f"{fmt_silver(ROAD_CORE_REWARDS['green'])} silver",
-            ),
-            discord.SelectOption(
-                label="Blue core",
-                value="blue",
-                emoji=ROAD_CORE_EMOJIS["blue"],
-                description=f"{fmt_silver(ROAD_CORE_REWARDS['blue'])} silver",
-            ),
-            discord.SelectOption(
-                label="Purple core",
-                value="purple",
-                emoji=ROAD_CORE_EMOJIS["purple"],
-                description=f"{fmt_silver(ROAD_CORE_REWARDS['purple'])} silver",
-            ),
-        ]
+    def __init__(self, rewards: dict[str, int] | None = None) -> None:
+        rewards = rewards or ROAD_CORE_REWARDS
+        options = []
+        for color, default_amount in ROAD_CORE_REWARDS.items():
+            amount = int(rewards.get(color, default_amount))
+            options.append(
+                discord.SelectOption(
+                    label=f"{color.title()} core",
+                    value=color,
+                    emoji=ROAD_CORE_EMOJIS[color],
+                    description=f"{fmt_silver(amount)} silver",
+                )
+            )
         super().__init__(
             placeholder="Pick the core color...",
             min_values=1,
@@ -129,9 +176,37 @@ class RoadsCoreColorSelect(discord.ui.Select):
 
 
 class RoadsCoreColorView(discord.ui.View):
-    def __init__(self) -> None:
+    def __init__(self, rewards: dict[str, int] | None = None) -> None:
         super().__init__(timeout=300)
-        self.add_item(RoadsCoreColorSelect())
+        self.add_item(RoadsCoreColorSelect(rewards))
+
+
+class RoadsCorePriceModal(discord.ui.Modal, title="Roads Core Payouts"):
+    def __init__(self, rewards: dict[str, int] | None = None) -> None:
+        super().__init__(timeout=300)
+        rewards = rewards or ROAD_CORE_REWARDS
+        self.price_inputs: dict[str, discord.ui.TextInput] = {}
+        for color, default_amount in ROAD_CORE_REWARDS.items():
+            field = discord.ui.TextInput(
+                label=f"{color.title()} core payout",
+                default=str(int(rewards.get(color, default_amount))),
+                placeholder="Example: 10m",
+                required=True,
+                max_length=32,
+            )
+            self.price_inputs[color] = field
+            self.add_item(field)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        cog = _get_bounty_cog(interaction)
+        if not cog:
+            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
+            return
+        values = {
+            color: str(field.value or "")
+            for color, field in self.price_inputs.items()
+        }
+        await cog._update_roads_core_prices(interaction, values)
 
 
 class RoadsCoreBoardView(discord.ui.View):
@@ -168,9 +243,11 @@ class RoadsCoreBoardView(discord.ui.View):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        cog = _get_bounty_cog(interaction)
+        rewards = cog._roads_core_rewards() if cog else ROAD_CORE_REWARDS
         lines = [
             f"{ROAD_CORE_EMOJIS[color]} **{color.title()}** — 🪙 **{fmt_silver(amount)}**"
-            for color, amount in ROAD_CORE_REWARDS.items()
+            for color, amount in rewards.items()
         ]
         await interaction.response.send_message(
             embed=info_embed(
@@ -180,3 +257,20 @@ class RoadsCoreBoardView(discord.ui.View):
             ),
             ephemeral=True,
         )
+
+    @discord.ui.button(
+        label="Edit Prices",
+        style=discord.ButtonStyle.secondary,
+        emoji="🛠️",
+        custom_id="roads_cores:prices",
+    )
+    async def edit_prices(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        cog = _get_bounty_cog(interaction)
+        if not cog:
+            await interaction.response.send_message("Cog not loaded.", ephemeral=True)
+            return
+        await cog._open_roads_core_price_modal(interaction)

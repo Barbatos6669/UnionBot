@@ -24,6 +24,7 @@ from cogs._bounties_roads import (
     ROAD_CORE_REWARDS,
     image_attachment_url,
     normalize_road_core_color,
+    parse_road_core_price,
     parse_road_core_proof,
     road_core_proof_text,
     road_core_title,
@@ -663,9 +664,20 @@ def test_roads_core_color_aliases_and_titles() -> None:
     assert normalize_road_core_color("green") == ("green", None)
     assert normalize_road_core_color("T6") == ("blue", None)
     assert normalize_road_core_color("purp") == ("purple", None)
+    assert normalize_road_core_color("gold") == ("gold", None)
+    assert normalize_road_core_color("yellow") == ("gold", None)
     assert normalize_road_core_color("orange")[0] is None
     assert ROAD_CORE_REWARDS["green"] == 1_000_000
+    assert ROAD_CORE_REWARDS["gold"] == 10_000_000
     assert road_core_title("blue").startswith("[Roads Core]")
+
+
+def test_roads_core_price_parser_accepts_compact_silver_values() -> None:
+    assert parse_road_core_price("10m") == (10_000_000, None)
+    assert parse_road_core_price("3 million") == (3_000_000, None)
+    assert parse_road_core_price("1,250k") == (1_250_000, None)
+    assert parse_road_core_price("500000") == (500_000, None)
+    assert parse_road_core_price("nope")[0] is None
 
 
 def test_roads_core_proof_round_trip() -> None:
