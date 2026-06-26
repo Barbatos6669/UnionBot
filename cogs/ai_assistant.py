@@ -67,6 +67,7 @@ MAX_KNOWLEDGE_DOCS = 8
 MAX_KNOWLEDGE_CHARS = 8500
 MAX_KNOWLEDGE_SNIPPETS = 10
 MAX_KNOWLEDGE_SECTION_CHARS = 1800
+MAX_KNOWLEDGE_DIAGNOSTIC_PREVIEW_CHARS = 220
 KNOWLEDGE_SOURCE_TIER_WEIGHTS = {"a": 4, "b": 2, "c": 0, "d": -1}
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[1] / "docs" / "bot_knowledge"
 _KNOWLEDGE_SECTION_CACHE: tuple[float, list["KnowledgeSection"]] | None = None
@@ -685,6 +686,26 @@ def _rank_knowledge_sections(
 
     ranked.sort(key=lambda row: (-row[0], row[1], row[2]))
     return ranked[:limit] if limit is not None else ranked
+
+
+def _knowledge_retrieval_preview(
+    question: str,
+    *,
+    sections: list[KnowledgeSection] | None = None,
+    limit: int = 5,
+) -> list[dict[str, str | int]]:
+    """Return compact retrieval diagnostics without calling an AI provider."""
+    clean_limit = max(1, min(int(limit), 8))
+    rows = _rank_knowledge_sections(question, sections=sections, limit=clean_limit)
+    return [
+        {
+            "score": score,
+            "filename": filename,
+            "heading": heading,
+            "preview": _clip_block(text, limit=MAX_KNOWLEDGE_DIAGNOSTIC_PREVIEW_CHARS),
+        }
+        for score, filename, heading, text in rows
+    ]
 
 
 def _channel_is_privateish(channel: discord.abc.GuildChannel | discord.Thread) -> bool:
@@ -3284,6 +3305,71 @@ class AIGroup(app_commands.Group, name="ai", description="Local AI helper contro
             else:
                 answer = "The AI helper hit an error. Staff can check the bot logs."
         await interaction.followup.send(answer, ephemeral=True)
+
+    @app_commands.command(name="inspect", description="Show which AI fast path or knowledge docs match a question.")
+    @app_commands.describe(
+        question="Question to inspect without posting an answer publicly.",
+        top_k="How many knowledge chunks to show.",
+    )
+    async def inspect(
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        top_k: app_commands.Range[int, 1, 6] = 5,
+    ) -> None:
+        if not await self._require_officer(interaction):
+            return
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message("Use this from a server text channel.", ephemeral=True)
+            return
+
+        clean_question = _clean_text(question, limit=MAX_QUESTION_CHARS)
+        quick_albion = _quick_albion_answer(clean_question)
+        quick_live = self.cog._quick_live_answer(
+            clean_question,
+            user=interaction.user,
+            channel=interaction.channel,
+        )
+        quick_server = self.cog._quick_server_answer(clean_question, channel=interaction.channel)
+        fast_paths = [
+            ("Albion glossary", quick_albion),
+            ("Live operations", quick_live),
+            ("Server workflow", quick_server),
+        ]
+        first_fast_path = next(((label, answer) for label, answer in fast_paths if answer), None)
+        if first_fast_path:
+            path_line = f"Would answer before model via **{first_fast_path[0]}**."
+        else:
+            path_line = "Would call the configured AI provider using the knowledge chunks below."
+
+        embed = info_embed(
+            "AI inspection",
+            "\n".join([
+                f"Question: `{_clip_block(clean_question, limit=180)}`",
+                path_line,
+                "This is diagnostic only; no AI provider call was made.",
+            ]),
+        )
+        for label, answer in fast_paths:
+            value = _clip_block(answer, limit=450) if answer else "No match."
+            embed.add_field(name=label, value=value, inline=False)
+
+        previews = _knowledge_retrieval_preview(clean_question, limit=int(top_k))
+        if previews:
+            for index, hit in enumerate(previews, start=1):
+                filename = str(hit["filename"])
+                heading = str(hit["heading"])
+                score = int(hit["score"])
+                preview = str(hit["preview"])
+                embed.add_field(
+                    name=f"KB hit #{index} · score {score}",
+                    value=_clip_block(f"`{filename}` / **{heading}**\n{preview}", limit=550),
+                    inline=False,
+                )
+        else:
+            embed.add_field(name="KB hits", value="No markdown sections matched this question.", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="status", description="Show AI helper configuration.")
     async def status(self, interaction: discord.Interaction) -> None:

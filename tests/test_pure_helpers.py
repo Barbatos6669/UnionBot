@@ -73,6 +73,7 @@ from cogs.ai_assistant import (
     KNOWLEDGE_FILE_HINTS,
     _discord_timestamp,
     _knowledge_phrases,
+    _knowledge_retrieval_preview,
     _knowledge_source_tier_weight,
     _knowledge_tokens,
     _make_knowledge_section,
@@ -354,6 +355,32 @@ def test_ai_knowledge_ranker_boosts_rare_exact_albion_terms() -> None:
 
     assert ranked[0][1] == "albion_fishing.md"
     assert ranked[0][2] == "Deadwater Eel"
+
+
+def test_ai_knowledge_retrieval_preview_is_compact_and_ranked() -> None:
+    sections = [
+        _make_knowledge_section(
+            "generic.md",
+            "Fishing basics",
+            "Fishing is a gathering profession. Bring bait and bank loot safely.",
+        ),
+        _make_knowledge_section(
+            "albion_fishing.md",
+            "Deadwater Eel",
+            "Deadwater Eel is a T7 rare freshwater fish. It is found in T7-T8 freshwater and rare fish are RNG.",
+        ),
+    ]
+
+    preview = _knowledge_retrieval_preview(
+        "how do i catch deadriver eel level 7?",
+        sections=sections,
+        limit=1,
+    )
+
+    assert len(preview) == 1
+    assert preview[0]["filename"] == "albion_fishing.md"
+    assert preview[0]["heading"] == "Deadwater Eel"
+    assert "T7 rare freshwater fish" in str(preview[0]["preview"])
 
 
 def test_ai_knowledge_terms_cover_event_weapon_and_inactivity_workflows() -> None:

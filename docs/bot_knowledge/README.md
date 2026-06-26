@@ -37,3 +37,6 @@ Retrieval notes:
   rare-term keyword weighting.
 - Keep headings specific. A heading like `Deadwater Eel` or `Loot Splits` helps
   more than a generic heading like `Notes`.
+- Officers can run `/ai inspect` on a question to see which fast answer path or
+  markdown sections would be used, without spending an AI request or posting in
+  public.
