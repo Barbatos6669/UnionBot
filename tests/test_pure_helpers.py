@@ -22,6 +22,7 @@ import discord
 from cogs._bounties_config import bounty_needs_payment, fmt_silver
 from cogs._bounties_roads import (
     ROAD_CORE_REWARDS,
+    image_attachment_url,
     normalize_road_core_color,
     parse_road_core_proof,
     road_core_proof_text,
@@ -680,6 +681,22 @@ def test_roads_core_proof_round_trip() -> None:
     assert parsed["screenshot"] == "https://cdn.discordapp.com/core.png"
     assert parsed["party"] == "@A @B"
     assert parsed["note"] == "won fight on exit"
+
+
+def test_roads_core_image_attachment_url_accepts_pasted_images() -> None:
+    class Attachment:
+        def __init__(self, filename: str, url: str, content_type: str | None = None) -> None:
+            self.filename = filename
+            self.url = url
+            self.content_type = content_type
+
+    class Message:
+        attachments = [
+            Attachment("notes.txt", "https://cdn.discordapp.com/notes.txt", "text/plain"),
+            Attachment("core-proof.png", "https://cdn.discordapp.com/core-proof.png", None),
+        ]
+
+    assert image_attachment_url(Message()) == "https://cdn.discordapp.com/core-proof.png"
 
 
 # ── _period_key ───────────────────────────────────────────────────────────

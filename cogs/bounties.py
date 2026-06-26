@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from cogs._typing import Bot
 from time_utils import utc_now_naive
+import asyncio
 import contextlib
 import datetime
 import json
@@ -52,7 +53,8 @@ from cogs._bounties_roads import (
     ROAD_CORE_REWARDS,
     ROAD_CORE_TITLE_PREFIX,
     RoadsCoreBoardView,
-    SubmitRoadsCoreModal,
+    RoadsCoreColorView,
+    image_attachment_url,
     parse_road_core_proof,
     road_core_proof_text,
     road_core_title,
@@ -1117,8 +1119,9 @@ class Bounties(commands.Cog):
         embed.add_field(
             name="How to Claim",
             value=(
-                "Click **Submit Core**, choose the core color, paste a screenshot/proof link, "
-                "and list who was in the party. Officers approve the payout from the review channel."
+                "Click **Submit Core**, choose the core color, then paste/upload the screenshot "
+                "directly in this channel. Put party members in the same message if they are not visible in the screenshot. "
+                "Officers approve the payout from the review channel."
             ),
             inline=False,
         )
@@ -1209,7 +1212,81 @@ class Bounties(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.response.send_modal(SubmitRoadsCoreModal())
+        await interaction.response.send_message(
+            embed=info_embed(
+                "Pick the core color",
+                "Choose the Roads core color first. After that, paste or upload the screenshot directly in this channel.",
+            ),
+            view=RoadsCoreColorView(),
+            ephemeral=True,
+        )
+
+    async def _start_roads_core_image_capture(
+        self,
+        interaction: discord.Interaction,
+        *,
+        color: str,
+    ) -> None:
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                embed=error_embed("No channel", "Use this from the bounty board channel."),
+                ephemeral=True,
+            )
+            return
+
+        reward = int(ROAD_CORE_REWARDS[color])
+        await interaction.response.send_message(
+            embed=info_embed(
+                f"{ROAD_CORE_EMOJIS[color]} {color.title()} core selected",
+                "Paste or upload the screenshot **in this channel** within 5 minutes.\n\n"
+                "Optional: type party members in the same message. The bot will capture the image and clean up the proof message if it can.",
+            ),
+            ephemeral=True,
+        )
+
+        channel_id = int(interaction.channel.id)
+        user_id = int(interaction.user.id)
+
+        def _check(message: discord.Message) -> bool:
+            return (
+                int(message.author.id) == user_id
+                and int(message.channel.id) == channel_id
+                and image_attachment_url(message) is not None
+            )
+
+        try:
+            proof_message = await self.bot.wait_for("message", check=_check, timeout=300)
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                embed=warning_embed(
+                    "Core submission timed out",
+                    "No image was received within 5 minutes. Click **Submit Core** again when you have the screenshot ready.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        screenshot = image_attachment_url(proof_message)
+        if not screenshot:
+            await interaction.followup.send(
+                embed=error_embed("Image missing", "I could not read the screenshot attachment. Try again."),
+                ephemeral=True,
+            )
+            return
+        party = (proof_message.content or "").strip()
+        if not party:
+            party = f"Submitted by <@{interaction.user.id}>; party visible in screenshot."
+
+        with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+            await proof_message.delete()
+
+        await self._submit_roads_core_bounty(
+            interaction,
+            color=color,
+            screenshot=screenshot,
+            party=party,
+            note=f"Captured from pasted image. Reward: {_fmt_silver(reward)} silver.",
+        )
 
     async def _submit_roads_core_bounty(
         self,

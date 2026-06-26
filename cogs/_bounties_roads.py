@@ -1,13 +1,11 @@
 """Roads power-core bounty board controls."""
 from __future__ import annotations
 
-import re
-
 import discord
 from discord.ext import commands
 
 from cogs._bounties_config import fmt_silver
-from utils import error_embed, info_embed
+from utils import info_embed
 
 ROAD_CORE_TITLE_PREFIX = "[Roads Core]"
 ROAD_CORE_REWARDS: dict[str, int] = {
@@ -82,78 +80,58 @@ def parse_road_core_proof(proof: str | None) -> dict[str, str]:
     return out
 
 
-def proof_has_url(raw: str) -> bool:
-    return bool(re.search(r"https?://\S+", str(raw or ""), re.IGNORECASE))
+def image_attachment_url(message) -> str | None:
+    image_ext = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+    for attachment in getattr(message, "attachments", []) or []:
+        content_type = str(getattr(attachment, "content_type", "") or "").lower()
+        filename = str(getattr(attachment, "filename", "") or "").lower()
+        if content_type.startswith("image/") or filename.endswith(image_ext):
+            return str(getattr(attachment, "url", "") or "").strip() or None
+    return None
 
 
-class SubmitRoadsCoreModal(discord.ui.Modal, title="Submit Roads Core"):
-    """Structured prompt for Roads hideout power-core payouts."""
-
+class RoadsCoreColorSelect(discord.ui.Select):
     def __init__(self) -> None:
-        super().__init__(timeout=None)
-        self.color = discord.ui.TextInput(
-            label="Core color",
-            placeholder="green, blue, or purple",
-            style=discord.TextStyle.short,
-            min_length=1,
-            max_length=20,
-            required=True,
+        options = [
+            discord.SelectOption(
+                label="Green core",
+                value="green",
+                emoji=ROAD_CORE_EMOJIS["green"],
+                description=f"{fmt_silver(ROAD_CORE_REWARDS['green'])} silver",
+            ),
+            discord.SelectOption(
+                label="Blue core",
+                value="blue",
+                emoji=ROAD_CORE_EMOJIS["blue"],
+                description=f"{fmt_silver(ROAD_CORE_REWARDS['blue'])} silver",
+            ),
+            discord.SelectOption(
+                label="Purple core",
+                value="purple",
+                emoji=ROAD_CORE_EMOJIS["purple"],
+                description=f"{fmt_silver(ROAD_CORE_REWARDS['purple'])} silver",
+            ),
+        ]
+        super().__init__(
+            placeholder="Pick the core color...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="roads_cores:color",
         )
-        self.screenshot = discord.ui.TextInput(
-            label="Screenshot / proof link",
-            placeholder="Paste a Discord attachment link or screenshot URL",
-            style=discord.TextStyle.short,
-            min_length=8,
-            max_length=300,
-            required=True,
-        )
-        self.party = discord.ui.TextInput(
-            label="Party members",
-            placeholder="Names or @mentions of who helped deliver the core",
-            style=discord.TextStyle.paragraph,
-            min_length=2,
-            max_length=500,
-            required=True,
-        )
-        self.note = discord.ui.TextInput(
-            label="Notes (optional)",
-            placeholder="Road, fight details, chest/core context, etc.",
-            style=discord.TextStyle.paragraph,
-            max_length=500,
-            required=False,
-        )
-        for item in (self.color, self.screenshot, self.party, self.note):
-            self.add_item(item)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
+    async def callback(self, interaction: discord.Interaction) -> None:
         cog = _get_bounty_cog(interaction)
         if not cog:
             await interaction.response.send_message("Cog not loaded.", ephemeral=True)
             return
-        color, error = normalize_road_core_color(str(self.color.value))
-        if error or not color:
-            await interaction.response.send_message(
-                embed=error_embed("Check the core color", error or "Invalid color."),
-                ephemeral=True,
-            )
-            return
-        screenshot = str(self.screenshot.value).strip()
-        if not proof_has_url(screenshot):
-            await interaction.response.send_message(
-                embed=error_embed(
-                    "Screenshot link needed",
-                    "Upload the screenshot in Discord first, copy the attachment link, then paste it here.",
-                ),
-                ephemeral=True,
-            )
-            return
-        await cog._submit_roads_core_bounty(
-            interaction,
-            color=color,
-            screenshot=screenshot,
-            party=str(self.party.value).strip(),
-            note=str(self.note.value or "").strip(),
-        )
+        await cog._start_roads_core_image_capture(interaction, color=self.values[0])
+
+
+class RoadsCoreColorView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=300)
+        self.add_item(RoadsCoreColorSelect())
 
 
 class RoadsCoreBoardView(discord.ui.View):
@@ -198,7 +176,7 @@ class RoadsCoreBoardView(discord.ui.View):
             embed=info_embed(
                 "Roads core payouts",
                 "\n".join(lines)
-                + "\n\nSubmit a screenshot/proof link and party list. Officers approve the payout before silver is owed.",
+                + "\n\nPick a color, then paste/upload the screenshot directly in the bounty channel. Officers approve the payout before silver is owed.",
             ),
             ephemeral=True,
         )
