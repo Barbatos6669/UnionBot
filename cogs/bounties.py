@@ -561,6 +561,18 @@ class Bounties(commands.Cog):
         await self.bot.wait_until_ready()
         db = self.bot.db  # type: ignore[attr-defined]
         try:
+            msg = await self._refresh_sso_route_board(create=True)
+            if msg:
+                info_log(f"SSO route board refreshed in #{msg.channel.name}.")
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"sso route board startup refresh failed: {exc!r}")
+        try:
+            msg = await self._refresh_roads_core_board(create=True)
+            if msg:
+                info_log(f"Roads core bounty board refreshed in #{msg.channel.name}.")
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"roads core board startup refresh failed: {exc!r}")
+        try:
             if not db.connection:
                 db.connect()
             db.cursor.execute(
@@ -594,14 +606,6 @@ class Bounties(commands.Cog):
                 refreshed += 1
             except Exception as exc:  # noqa: BLE001
                 error_log(f"bounty startup refresh #{bounty.get('id')} failed: {exc!r}")
-        try:
-            await self._refresh_sso_route_board(create=True)
-        except Exception as exc:  # noqa: BLE001
-            error_log(f"sso route board startup refresh failed: {exc!r}")
-        try:
-            await self._refresh_roads_core_board(create=True)
-        except Exception as exc:  # noqa: BLE001
-            error_log(f"roads core board startup refresh failed: {exc!r}")
         if refreshed:
             info_log(f"Bounties: refreshed/cleaned {refreshed} existing post(s) after startup.")
 
