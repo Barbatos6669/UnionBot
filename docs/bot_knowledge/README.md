@@ -22,3 +22,10 @@ Editing notes:
   guild warnings officer-only and evidence-first.
 - If a fact can change in-game, tell the bot to point members to current
   in-game UI, patch notes, or an officer.
+
+Eval notes:
+
+- Put repeatable member questions in `ai_eval_cases.json`.
+- Run `python3 scripts/ai_eval.py --verbose` before/after knowledge changes.
+- Add a new eval case whenever the bot gives a wrong or weird answer that we
+  want to prevent from coming back.

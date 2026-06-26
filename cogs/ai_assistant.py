@@ -897,6 +897,16 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
     voice_lounge = channel("voice_lounge", "the Travelers Lounge voice channel")
     content_voice = channel("content_voice", "the Content Voice join-to-create channel")
 
+    if (
+        words & {"screenshot", "photo", "image", "picture"}
+        and (words & {"posted", "upload", "uploaded", "early", "flow"} or has("outside the flow"))
+    ):
+        return (
+            f"Start in {registration}. Click **Register · Registrarse · Cadastrar-se** first, enter your Albion character name, "
+            "then upload the character-screen screenshot in that same channel when the bot asks. "
+            "If you already posted the image early, just run the button flow again so the bot can attach the screenshot to your registration."
+        )
+
     if words & {"register", "registration", "verify", "verified", "sync", "synced"}:
         if words & {"screenshot", "photo", "image", "picture"} or has("outside the flow"):
             return (

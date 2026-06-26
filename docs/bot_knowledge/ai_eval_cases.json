@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "description": "Offline UnionBot AI eval cases. These do not call OpenAI or Discord; they validate fast answers and local markdown retrieval.",
+  "cases": [
+    {
+      "id": "albion_focus_fire",
+      "type": "quick_albion",
+      "question": "what is focus fire?",
+      "must_include": ["anti-dogpile", "catch", "purge"],
+      "must_not_include": ["sso"]
+    },
+    {
+      "id": "albion_deadriver_eel",
+      "type": "quick_albion",
+      "question": "how do i catch deadriver eel level 7?",
+      "must_include": ["Deadwater Eel", "T7 rare freshwater", "RNG"],
+      "must_not_include": ["ganking target"]
+    },
+    {
+      "id": "albion_overcharge",
+      "type": "quick_albion",
+      "question": "what does oc mean?",
+      "must_include": ["overcharge", "Siphoned Energy", "break"]
+    },
+    {
+      "id": "albion_disarray",
+      "type": "quick_albion",
+      "question": "what is disarray?",
+      "must_include": ["anti-zerg", "Outlands/ZvZ", "penalties"]
+    },
+    {
+      "id": "albion_resource_return_rate",
+      "type": "quick_albion",
+      "question": "what does rrr mean?",
+      "must_include": ["Resource Return Rate", "crafting", "refining"]
+    },
+    {
+      "id": "albion_item_power",
+      "type": "quick_albion",
+      "question": "what is IP?",
+      "must_include": ["Item Power", "tier", "spec"]
+    },
+    {
+      "id": "market_buy_order_not_instant",
+      "type": "quick_albion",
+      "question": "what is a buy order?",
+      "must_include": ["market", "target order", "not a promise"]
+    },
+    {
+      "id": "workflow_registration",
+      "type": "quick_workflow",
+      "question": "how do i register?",
+      "must_include": ["<#register>", "screenshot", "Americas"]
+    },
+    {
+      "id": "workflow_registration_early_screenshot",
+      "type": "quick_workflow",
+      "question": "i posted my screenshot outside the flow, what now?",
+      "must_include": ["Click **Register", "run the button flow again"]
+    },
+    {
+      "id": "workflow_create_lfg",
+      "type": "quick_workflow",
+      "question": "how do i create an lfg?",
+      "must_include": ["<#event-board>", "<#lfg>", "Sign up"],
+      "must_not_include": ["SSO"]
+    },
+    {
+      "id": "workflow_faction_lfg",
+      "type": "quick_workflow",
+      "question": "where do faction lfg posts go?",
+      "must_include": ["<#martlock-lfg>", "faction info"]
+    },
+    {
+      "id": "workflow_weapon_roles",
+      "type": "quick_workflow",
+      "question": "where do i pick weapon roles?",
+      "must_include": ["<#weapon-roles>", "comp", "pings"]
+    },
+    {
+      "id": "retrieval_event_voice_analytics",
+      "type": "retrieval",
+      "question": "why do I need to join event voice for analytics and regear?",
+      "expected_docs": ["event_attendance_analytics_regear.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_market_price_confusion",
+      "type": "retrieval",
+      "question": "the market post says a buy price, can I instantly buy it there?",
+      "expected_docs": ["market_economy.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_fishing_rare_eel",
+      "type": "retrieval",
+      "question": "how do i catch a deadriver eel level 7 rare fish?",
+      "expected_docs": ["albion_fishing.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_source_quality_patch",
+      "type": "retrieval",
+      "question": "what source does the bot trust for patch changes and current values?",
+      "expected_docs": ["albion_kb_quality_policy.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_sensitive_risk_watch",
+      "type": "retrieval",
+      "question": "why is risk watch officer only and evidence first?",
+      "expected_docs": ["albion_kb_quality_policy.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_unofficial_api_caution",
+      "type": "retrieval",
+      "question": "can unofficial gameinfo endpoints be treated as official Albion APIs?",
+      "expected_docs": ["albion_kb_quality_policy.md"],
+      "top_k": 5
+    },
+    {
+      "id": "retrieval_reconcile_waiting_data",
+      "type": "retrieval",
+      "question": "why does the reconcile report say it is waiting on loot value or data?",
+      "expected_docs": ["event_attendance_analytics_regear.md"],
+      "top_k": 5
+    }
+  ]
+}
