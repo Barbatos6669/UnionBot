@@ -29,6 +29,13 @@
       "must_include": ["anti-zerg", "Outlands/ZvZ", "penalties"]
     },
     {
+      "id": "albion_zvz_frontline_tank_build",
+      "type": "quick_albion",
+      "question": "What's a good ZvZ build for a frontline tank right now?",
+      "must_include": ["ZvZ frontline", "Judicator", "Hunter Shoes", "posted comp"],
+      "must_not_include": ["<#comps>"]
+    },
+    {
       "id": "albion_resource_return_rate",
       "type": "quick_albion",
       "question": "what does rrr mean?",

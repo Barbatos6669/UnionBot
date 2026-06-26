@@ -313,7 +313,11 @@ KNOWLEDGE_FILE_HINTS = {
     "albion_roads_portal_scouting_reference.md": {"roads", "avalonian", "ava", "sso", "route", "portal", "ttl", "scout", "charges"},
     "albion_weapons_roles_and_builds.md": {"weapon", "weapons", "build", "role", "tank", "healer", "support", "dps"},
     "albion_world_content_reference.md": {"content", "world", "open", "dungeon", "dungeons", "solo", "group", "static", "randomized", "corrupted", "hellgate", "mists", "knightfall", "abbey", "brecilien", "roads", "avalon", "avalonian", "depths", "abyssal", "arena", "crystal", "expedition", "hce", "world", "boss"},
-    "albion_zvz_small_scale_basics.md": {"zvz", "zerg", "smallscale", "small", "scale", "brawl", "kite", "bomb", "disarray", "debuff"},
+    "albion_zvz_small_scale_basics.md": {
+        "zvz", "zerg", "smallscale", "small", "scale", "brawl", "kite",
+        "bomb", "disarray", "debuff", "frontline", "tank", "engage",
+        "build", "staff", "balance", "grovekeeper", "grailseeker", "bedrock",
+    },
     "albion_zone_risk_and_death.md": {"zone", "death", "full", "loot", "red", "black", "yellow", "blue", "rz", "bz", "yz"},
     "albion_zone_transport_decision_tree.md": {"zone", "transport", "hauling", "risk", "safe", "red", "black", "route", "caerleon"},
     "albion_content_types.md": {"content", "gank", "ganking", "zvz", "hellgate", "mist", "dungeon", "gathering"},
@@ -876,6 +880,21 @@ def _quick_albion_answer(question: str) -> str | None:
             "mounts and some Outlands home mechanics can add extra Disarray pressure, so callers should verify current patch "
             "values before serious CTAs."
         )
+    if (
+        ("zvz" in words or "zerg" in words)
+        and ({"tank", "frontline", "engage"} & words)
+        and (
+            {"build", "gear", "set", "bring", "run", "play"} & words
+            or has("what s a good", "whats a good", "good zvz")
+        )
+    ):
+        return (
+            "For a baseline **ZvZ frontline/engage tank**, start with **Staff of Balance, Grovekeeper, Grailseeker, or Bedrock** "
+            "depending on the caller's comp. Safe gear shell: **Judicator/Guardian/Duskweaver armor**, **Soldier/Knight/Hellion Hood**, "
+            "**Hunter Shoes**, **Martlock/Fort Sterling/Bridgewatch cape**, **Resistance or Gigantify potion**, and "
+            "**Beef Sandwich/Avalonian Sandwich/Pork Omelette**. Your job is to stay with the caller, survive the first hit, catch or "
+            "peel a clump, then reset. For a real CTA, always follow the posted comp first because the exact tank weapon changes by plan."
+        )
     if "bubble" in words:
         return (
             "A bubble is temporary protection or invisibility from things like zone changes, exits, shrines, or certain safe-entry "
@@ -1145,7 +1164,28 @@ def _quick_workflow_answer(question: str, channels: dict[str, str]) -> str | Non
             "they help shotcallers build comps and find swaps. Content roles are still the place for pings."
         )
 
-    if words & {"comp", "comps", "build", "builds", "vod", "vods", "shotcall", "shotcalling", "planning"}:
+    comp_route_intent = (
+        words & {"comp", "comps", "build", "builds"}
+        and (
+            words & {"where", "channel", "post", "posted", "find", "look", "add", "edit", "submit", "share", "go"}
+            or has("where do", "where can", "what channel")
+        )
+    )
+    vod_route_intent = (
+        words & {"vod", "vods"}
+        and (
+            words & {"where", "channel", "post", "posted", "review", "upload", "share", "go"}
+            or has("where do", "where can", "what channel")
+        )
+    )
+    shotcall_route_intent = (
+        words & {"shotcall", "shotcalling"}
+        and (
+            words & {"where", "channel", "sop", "guide", "process", "post", "posted", "go"}
+            or has("where do", "where can", "what channel")
+        )
+    )
+    if comp_route_intent or vod_route_intent or shotcall_route_intent:
         if words & {"vod", "vods"}:
             return f"Battle reviews and recordings go in {battle_vods}. Keep planning in {content_planning} and builds in {comps}."
         if words & {"shotcall", "shotcalling"}:

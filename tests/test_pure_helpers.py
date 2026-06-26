@@ -216,6 +216,10 @@ def test_quick_albion_answers_common_terms_without_model_call() -> None:
     assert "overcharge" in (_quick_albion_answer("what does oc mean?") or "").lower()
     assert "Resource Return Rate" in (_quick_albion_answer("what does rrr mean?") or "")
     assert "Item Power" in (_quick_albion_answer("what is IP?") or "")
+    tank_build = _quick_albion_answer("What's a good ZvZ build for a frontline tank right now?") or ""
+    assert "ZvZ frontline" in tank_build
+    assert "Judicator" in tank_build
+    assert "posted comp" in tank_build
 
 
 def test_quick_albion_answer_ignores_bot_workflow_questions() -> None:
@@ -490,6 +494,15 @@ def test_quick_workflow_answer_routes_server_categories() -> None:
     builds = _quick_workflow_answer("where do builds and comps go?", channels) or ""
     assert "<#comps>" in builds
     assert "<#planning>" in builds
+
+
+def test_quick_workflow_answer_does_not_hijack_build_advice() -> None:
+    channels = {
+        "comps": "<#comps>",
+        "content_planning": "<#planning>",
+    }
+
+    assert _quick_workflow_answer("What's a good ZvZ build for a frontline tank right now?", channels) is None
 
 
 # ── openai moderation thresholds ──────────────────────────────────────────
