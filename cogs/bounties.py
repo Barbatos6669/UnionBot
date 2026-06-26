@@ -47,6 +47,16 @@ from discord.ext import commands, tasks
 from debug import error_log, info_log
 from utils import error_embed, info_embed, success_embed, warning_embed
 from utils import is_officer as _is_officer
+from cogs._bounties_roads import (
+    ROAD_CORE_EMOJIS,
+    ROAD_CORE_REWARDS,
+    ROAD_CORE_TITLE_PREFIX,
+    RoadsCoreBoardView,
+    SubmitRoadsCoreModal,
+    parse_road_core_proof,
+    road_core_proof_text,
+    road_core_title,
+)
 from cogs._bounties_sso import SSORouteBoardView, SubmitSSORouteModal
 
 # Constants, formatters, parsers, and the per-bounty embed builder live in
@@ -107,6 +117,7 @@ from cogs._bounties_views import (
 
 class Bounties(commands.Cog):
     KILL_BOUNTY_CFG_PREFIX = "bounty_enemy_target:"
+    ROADS_CORE_TITLE_PREFIX = ROAD_CORE_TITLE_PREFIX
     PAYMENT_REMINDER_DEFAULT_HOURS = 24
     PAYMENT_REMINDER_DEFAULT_DAYS = 14
     PAYMENT_REMINDER_BUTTON_LIMIT = 5
@@ -156,8 +167,25 @@ class Bounties(commands.Cog):
             return db.get_config(CFG_BOARD_CHANNEL)
         return None
 
+    def _is_roads_core_bounty(self, bounty: dict) -> bool:
+        return str(bounty.get("title") or "").startswith(self.ROADS_CORE_TITLE_PREFIX)
+
     async def _post_or_update_board_message(self, bounty: dict) -> None:
         db = self.bot.db  # type: ignore[attr-defined]
+        if self._is_roads_core_bounty(bounty):
+            existing_channel_id = bounty.get("channel_id")
+            existing_msg_id = bounty.get("message_id")
+            if existing_channel_id and existing_msg_id:
+                try:
+                    chan = self.bot.get_channel(int(existing_channel_id))
+                    if isinstance(chan, discord.TextChannel):
+                        msg = await chan.fetch_message(int(existing_msg_id))
+                        await msg.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+                    pass
+                _db_update(db, bounty["id"], channel_id=None, message_id=None)
+            await self._refresh_roads_core_board(create=True)
+            return
         target_channel_id = self._target_channel_id(bounty["status"])
         if bounty["status"] in (STATUS_CANCELLED, STATUS_EXPIRED):
             target_channel_id = None
@@ -570,6 +598,10 @@ class Bounties(commands.Cog):
             await self._refresh_sso_route_board(create=True)
         except Exception as exc:  # noqa: BLE001
             error_log(f"sso route board startup refresh failed: {exc!r}")
+        try:
+            await self._refresh_roads_core_board(create=True)
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"roads core board startup refresh failed: {exc!r}")
         if refreshed:
             info_log(f"Bounties: refreshed/cleaned {refreshed} existing post(s) after startup.")
 
@@ -1000,6 +1032,245 @@ class Bounties(commands.Cog):
         await self._refresh_sso_route_board(create=True)
         await interaction.response.send_message(
             embed=success_embed("Route closed", "The SSO route board has been updated."),
+            ephemeral=True,
+        )
+
+    # ── Internal: Roads core board ──────────────────────────────────────────
+    def _fetch_roads_core_bounties(
+        self,
+        *,
+        statuses: tuple[str, ...] = (STATUS_CLAIMED, STATUS_SUBMITTED, STATUS_COMPLETED),
+        limit: int = 12,
+    ) -> list[dict]:
+        db = self.bot.db  # type: ignore[attr-defined]
+        if not db.connection:
+            db.connect()
+        placeholders = ",".join("?" * len(statuses))
+        db.cursor.execute(
+            f"""
+            SELECT * FROM bounties
+             WHERE title LIKE ?
+               AND status IN ({placeholders})
+             ORDER BY datetime(COALESCE(completed_at, submitted_at, claimed_at, posted_at)) DESC,
+                      id DESC
+             LIMIT ?
+            """,
+            (f"{self.ROADS_CORE_TITLE_PREFIX}%", *statuses, int(limit)),
+        )
+        return [dict(r) for r in db.cursor.fetchall()]
+
+    def _roads_core_deadline(self) -> str:
+        db = self.bot.db  # type: ignore[attr-defined]
+        configured = str(db.get_config("roads_core_bounty_deadline") or "").strip()
+        if configured:
+            return configured
+        end = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=14)
+        return end.replace(microsecond=0).isoformat(sep=" ")
+
+    async def _roads_core_channel(
+        self,
+        channel: Optional[discord.TextChannel] = None,
+    ) -> Optional[discord.TextChannel]:
+        if channel is not None:
+            return channel
+        db = self.bot.db  # type: ignore[attr-defined]
+        channel_id = (
+            db.get_config("roads_core_bounty_channel_id")
+            or db.get_config(CFG_BOARD_CHANNEL)
+        )
+        if not channel_id:
+            return None
+        try:
+            found = self.bot.get_channel(int(channel_id)) or await self.bot.fetch_channel(int(channel_id))
+        except (ValueError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+        return found if isinstance(found, discord.TextChannel) else None
+
+    def _roads_core_board_embed(self) -> discord.Embed:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        rows = self._fetch_roads_core_bounties(limit=12)
+        deadline = self._dt_from_iso(self._roads_core_deadline())
+        deadline_text = (
+            f"<t:{int(deadline.timestamp())}:R> · <t:{int(deadline.timestamp())}:D>"
+            if deadline else "current two-week push"
+        )
+        embed = discord.Embed(
+            title="⚡ Roads Hideout Core Bounty — live",
+            description=(
+                "**For the next two weeks, all Roads power cores go to the Roads Hideout.**\n"
+                "Hit the Roads, fight for cores, fight for chests, and bring the power home for the Union.\n\n"
+                f"**Window:** {deadline_text}\n"
+                "**Outworld cores:** use the normal payout policy."
+            ),
+            color=discord.Color.purple(),
+            timestamp=now,
+        )
+        payout_lines = [
+            f"{ROAD_CORE_EMOJIS[color]} **{color.title()} core** — 🪙 **{_fmt_silver(amount)}**"
+            for color, amount in ROAD_CORE_REWARDS.items()
+        ]
+        embed.add_field(name="Roads Hideout Payouts", value="\n".join(payout_lines), inline=False)
+        embed.add_field(
+            name="How to Claim",
+            value=(
+                "Click **Submit Core**, choose the core color, paste a screenshot/proof link, "
+                "and list who was in the party. Officers approve the payout from the review channel."
+            ),
+            inline=False,
+        )
+
+        recent_lines: list[str] = []
+        for row in rows:
+            proof = parse_road_core_proof(row.get("proof"))
+            color = str(proof.get("color") or "").lower()
+            emoji = ROAD_CORE_EMOJIS.get(color, "⚡")
+            status = str(row.get("status") or "unknown")
+            event_at = (
+                self._dt_from_iso(row.get("completed_at"))
+                or self._dt_from_iso(row.get("submitted_at"))
+                or self._dt_from_iso(row.get("claimed_at"))
+                or self._dt_from_iso(row.get("posted_at"))
+            )
+            when = f"<t:{int(event_at.timestamp())}:R>" if event_at else "unknown time"
+            recent_lines.append(
+                f"`#{row.get('id')}` {emoji} **{color.title() or 'Core'}** "
+                f"· {STATUS_EMOJI.get(status, '•')} {status} "
+                f"· <@{row.get('claimed_by')}> · {when}"
+            )
+            if len(recent_lines) >= 6:
+                break
+        if recent_lines:
+            embed.add_field(
+                name="Recent Core Claims",
+                value="\n".join(recent_lines)[:1024],
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Recent Core Claims",
+                value="No Roads core claims submitted yet. Be first on the board.",
+                inline=False,
+            )
+        embed.set_footer(text="Roads core board · one clean board, officer-approved payouts")
+        return embed
+
+    async def _refresh_roads_core_board(
+        self,
+        *,
+        channel: Optional[discord.TextChannel] = None,
+        create: bool = True,
+    ) -> Optional[discord.Message]:
+        db = self.bot.db  # type: ignore[attr-defined]
+        target = await self._roads_core_channel(channel)
+        if not target:
+            return None
+
+        embed = self._roads_core_board_embed()
+        view = RoadsCoreBoardView()
+        msg_id = db.get_config("roads_core_bounty_board_message_id")
+        if msg_id:
+            try:
+                msg = await target.fetch_message(int(msg_id))
+                await msg.edit(embed=embed, view=view)
+                return msg
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, TypeError, ValueError):
+                pass
+        if not create:
+            return None
+
+        msg = await target.send(
+            embed=embed,
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        db.set_config("roads_core_bounty_board_message_id", str(msg.id))
+        db.set_config("roads_core_bounty_channel_id", str(target.id))
+        return msg
+
+    async def _open_roads_core_modal(self, interaction: discord.Interaction) -> None:
+        db = self.bot.db  # type: ignore[attr-defined]
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                embed=error_embed("Server only", "Use this from inside the guild server."),
+                ephemeral=True,
+            )
+            return
+        profile = db.fetch_user_profile(str(interaction.user.id))
+        if not profile or not profile.get("albion_player_id"):
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Not registered",
+                    "Register your Albion character first so core bounties can pay the right player.",
+                ),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(SubmitRoadsCoreModal())
+
+    async def _submit_roads_core_bounty(
+        self,
+        interaction: discord.Interaction,
+        *,
+        color: str,
+        screenshot: str,
+        party: str,
+        note: str = "",
+    ) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        db = self.bot.db  # type: ignore[attr-defined]
+        reward = int(ROAD_CORE_REWARDS[color])
+        proof = road_core_proof_text(
+            color=color,
+            screenshot=screenshot,
+            party=party,
+            note=note,
+        )
+        title = road_core_title(color)
+        description = (
+            "Roads Hideout power-core bounty. Officers verify screenshot proof "
+            "and party list before approving payout."
+        )
+        if not db.connection:
+            db.connect()
+        db.cursor.execute(
+            """INSERT INTO bounties
+               (title, description, reward_points, posted_by, deadline, status,
+                claimed_by, claimed_at, submitted_at, proof)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                title,
+                description,
+                reward,
+                str(self.bot.user.id) if self.bot.user else "system",
+                self._roads_core_deadline(),
+                STATUS_SUBMITTED,
+                str(interaction.user.id),
+                _now_iso(),
+                _now_iso(),
+                proof,
+            ),
+        )
+        db.connection.commit()
+        bounty_id = int(db.cursor.lastrowid or 0)
+        if not bounty_id:
+            await interaction.followup.send(
+                embed=error_embed("Could not submit core", "The bot could not create the bounty row."),
+                ephemeral=True,
+            )
+            return
+
+        await self._refresh_roads_core_board(create=True)
+        try:
+            await self._notify_officers_submission(bounty_id, interaction.user)
+        except Exception as exc:  # noqa: BLE001
+            error_log(f"roads core officer notice failed for #{bounty_id}: {exc!r}")
+        await interaction.followup.send(
+            embed=success_embed(
+                f"Roads core submitted — #{bounty_id}",
+                f"{ROAD_CORE_EMOJIS[color]} **{color.title()} core** for "
+                f"🪙 **{_fmt_silver(reward)}** is awaiting officer approval.",
+            ),
             ephemeral=True,
         )
 
@@ -1592,6 +1863,52 @@ class Bounties(commands.Cog):
             embed=success_embed(
                 "SSO route board ready",
                 f"The board is live in {target.mention}. Scouts can use **Add / Update Route** from that message.",
+            ),
+            ephemeral=True,
+        )
+
+    @bounty_group.command(name="roads-cores", description="Post or refresh the single Roads core bounty board.")
+    @app_commands.describe(channel="Optional channel to place the Roads core board in. Defaults to this channel.")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def bounty_roads_cores(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[discord.TextChannel] = None,
+    ) -> None:
+        target = channel
+        if target is None and isinstance(interaction.channel, discord.TextChannel):
+            target = interaction.channel
+        if target is None:
+            await interaction.response.send_message(
+                embed=error_embed("No channel", "Run this from a text channel or provide one."),
+                ephemeral=True,
+            )
+            return
+        me = target.guild.me
+        perms = target.permissions_for(me) if me else None
+        if perms is None or not (perms.send_messages and perms.embed_links):
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Cannot post there",
+                    f"I need **Send Messages** + **Embed Links** in {target.mention}.",
+                ),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        self.bot.db.set_config("roads_core_bounty_channel_id", str(target.id))  # type: ignore[attr-defined]
+        msg = await self._refresh_roads_core_board(channel=target, create=True)
+        if not msg:
+            await interaction.followup.send(
+                embed=error_embed("Board failed", "The Roads core board could not be posted or refreshed."),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            embed=success_embed(
+                "Roads core board ready",
+                f"The board is live in {target.mention}. Members can use **Submit Core** from that message.",
             ),
             ephemeral=True,
         )

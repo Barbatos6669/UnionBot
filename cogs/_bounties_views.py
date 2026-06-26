@@ -26,6 +26,7 @@ from cogs._bounties_config import (
     bounty_needs_payment as _bounty_needs_payment,
 )
 from cogs._bounties_db import db_create as _db_create, db_get as _db_get
+from cogs._bounties_roads import RoadsCoreBoardView
 from cogs._bounties_sso import SSORouteBoardView, SubmitSSORouteModal
 from cogs._typing import Bot
 from debug import info_log
@@ -396,3 +397,4 @@ def register_persistent_bounty_views(bot: Bot) -> None:
         BountyApproveButton, BountyRejectButton, BountyConfirmPaidButton,
     )
     bot.add_view(SSORouteBoardView())
+    bot.add_view(RoadsCoreBoardView())

@@ -20,6 +20,13 @@ import datetime as dt
 import discord
 
 from cogs._bounties_config import bounty_needs_payment, fmt_silver
+from cogs._bounties_roads import (
+    ROAD_CORE_REWARDS,
+    normalize_road_core_color,
+    parse_road_core_proof,
+    road_core_proof_text,
+    road_core_title,
+)
 from cogs._content_config import (
     availability_recommendation_keys,
     availability_content_recommendations,
@@ -649,6 +656,30 @@ def test_bounty_needs_payment_only_for_completed_unpaid_rewards() -> None:
         "reward_points": 1_000_000,
         "claimed_by": "123",
     })
+
+
+def test_roads_core_color_aliases_and_titles() -> None:
+    assert normalize_road_core_color("green") == ("green", None)
+    assert normalize_road_core_color("T6") == ("blue", None)
+    assert normalize_road_core_color("purp") == ("purple", None)
+    assert normalize_road_core_color("orange")[0] is None
+    assert ROAD_CORE_REWARDS["green"] == 1_000_000
+    assert road_core_title("blue").startswith("[Roads Core]")
+
+
+def test_roads_core_proof_round_trip() -> None:
+    proof = road_core_proof_text(
+        color="purple",
+        screenshot="https://cdn.discordapp.com/core.png",
+        party="@A @B",
+        note="won fight on exit",
+    )
+    parsed = parse_road_core_proof(proof)
+
+    assert parsed["color"] == "purple"
+    assert parsed["screenshot"] == "https://cdn.discordapp.com/core.png"
+    assert parsed["party"] == "@A @B"
+    assert parsed["note"] == "won fight on exit"
 
 
 # ── _period_key ───────────────────────────────────────────────────────────
