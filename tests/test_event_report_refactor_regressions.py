@@ -7,6 +7,29 @@ import pytest
 from cogs._event_report_time import event_window
 from cogs._event_report_ui import _parse_silver_amount
 from cogs.automation import _run_nightly_backup
+from sql_database import Database
+
+
+def test_fresh_database_initializes_event_report_tables(tmp_path):
+    db_path = tmp_path / "fresh.db"
+    db = Database(str(db_path))
+    db.connect()
+    try:
+        db.initialize_all_tables()
+        rows = db.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        tables = {row["name"] for row in rows}
+    finally:
+        db.close()
+
+    assert {
+        "event_voice_snapshots",
+        "event_voice_reconciled",
+        "event_loot_summaries",
+        "event_report_pending_data",
+        "event_report_combat_cache",
+    } <= tables
 
 
 def test_event_report_window_defaults_and_voice_extension():

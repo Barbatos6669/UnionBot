@@ -1364,6 +1364,111 @@ class Database(LfgDatabaseMixin, LoadoutChestDatabaseMixin):
                 pass
             return None
 
+    def adjust_silver_balances_batch(
+        self,
+        entries: list[dict],
+    ) -> tuple[dict[str, int], list[str]] | None:
+        """Atomically apply multiple silver balance changes.
+
+        Returns ``(new_balances_by_discord_id, missing_discord_ids)``. If any
+        requested profile is missing, no writes are made and the missing IDs
+        are returned. On database errors, all writes are rolled back and
+        ``None`` is returned. Existing single-member callers should keep using
+        ``adjust_silver_balance``.
+        """
+        normalized: list[dict] = []
+        for entry in entries or []:
+            try:
+                delta = int(entry.get("delta") or 0)
+            except (TypeError, ValueError):
+                continue
+            discord_id = str(entry.get("discord_id") or "").strip()
+            if not discord_id or not delta:
+                continue
+            normalized.append(
+                {
+                    "discord_id": discord_id,
+                    "delta": delta,
+                    "reason": entry.get("reason"),
+                    "ref_type": entry.get("ref_type"),
+                    "ref_id": entry.get("ref_id"),
+                    "actor_id": entry.get("actor_id"),
+                }
+            )
+
+        if not normalized:
+            return {}, []
+
+        try:
+            if not self.connection:
+                self.connect()
+
+            requested_ids = sorted({entry["discord_id"] for entry in normalized})
+            placeholders = ",".join("?" for _ in requested_ids)
+            rows = self.connection.execute(
+                f"SELECT discord_id FROM user_profiles WHERE discord_id IN ({placeholders})",
+                tuple(requested_ids),
+            ).fetchall()
+            existing_ids = {str(row["discord_id"]) for row in rows}
+            missing = [
+                discord_id
+                for discord_id in requested_ids
+                if discord_id not in existing_ids
+            ]
+            if missing:
+                debug.error_log(
+                    "adjust_silver_balances_batch: missing profile(s): "
+                    + ", ".join(missing)
+                )
+                return {}, missing
+
+            with self.connection:
+                for entry in normalized:
+                    cur = self.connection.execute(
+                        'UPDATE user_profiles '
+                        'SET silver_balance = COALESCE(silver_balance, 0) + ? '
+                        'WHERE discord_id = ?',
+                        (entry["delta"], entry["discord_id"]),
+                    )
+                    if cur.rowcount == 0:
+                        raise sqlite3.IntegrityError(
+                            f"profile vanished during silver batch: {entry['discord_id']}"
+                        )
+                    self.connection.execute(
+                        'INSERT INTO silver_ledger '
+                        '(discord_id, delta, reason, ref_type, ref_id, actor_id) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
+                        (
+                            entry["discord_id"],
+                            entry["delta"],
+                            entry["reason"],
+                            entry["ref_type"],
+                            entry["ref_id"],
+                            entry["actor_id"],
+                        ),
+                    )
+
+            rows = self.connection.execute(
+                f"SELECT discord_id, silver_balance FROM user_profiles WHERE discord_id IN ({placeholders})",
+                tuple(requested_ids),
+            ).fetchall()
+            balances = {
+                str(row["discord_id"]): int(row["silver_balance"] or 0)
+                for row in rows
+            }
+            debug.info_log(
+                "silver_balance batch: "
+                f"{len(normalized)} ledger row(s), {len(balances)} member(s)."
+            )
+            return balances, []
+        except sqlite3.Error as e:
+            debug.error_log(f"adjust_silver_balances_batch failed: {e}")
+            try:
+                self.connection.rollback()
+            except sqlite3.Error:
+                pass
+            return None
+
     def fetch_silver_balance(self, discord_id: str) -> int:
         """Return current silver_balance for a member (0 if no profile)."""
         try:
@@ -2286,6 +2391,10 @@ class Database(LfgDatabaseMixin, LoadoutChestDatabaseMixin):
         ''')
         self.execute(
             'CREATE INDEX IF NOT EXISTS ix_evs_event ON event_voice_snapshots(event_id)'
+        )
+        self.execute(
+            'CREATE INDEX IF NOT EXISTS ix_evs_event_user '
+            'ON event_voice_snapshots(event_id, discord_id)'
         )
         # Whether voice-attendance reconciliation has run for an event.
         self.execute('''

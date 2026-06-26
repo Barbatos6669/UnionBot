@@ -31,6 +31,7 @@ from cogs._content_config import (
     ranked_available_timer_indexes,
     season_point_focus_recommendation_keys,
 )
+from cogs.content_roles import _parse_config_channel_id
 from cogs._content_views import _availability_slot_heading, _availability_timer_window
 from cogs._event_report_regear import suppressed_auto_regear_lines
 from cogs._lfg_config import PrimeSlot, display_slot_label, prime_slot_display_label
@@ -43,6 +44,7 @@ from cogs._lfg_helpers import (
     _next_occurrence,
     _slot_occurrence_on_date,
 )
+from cogs.lfg import _config_enabled_from_db
 from cogs._lfg_views import _claim_fields_for_schedule, _parse_general_lfg_schedule
 from cogs._nickname_tags import (
     extract_tagged_nickname_name,
@@ -1033,3 +1035,29 @@ def test_ranked_available_timer_indexes_prefers_headcount_then_early_slot() -> N
         window_count=4,
         min_available=2,
     ) == [(5, 1), (5, 2), (3, 0)]
+
+
+class _ConfigDb:
+    def __init__(self, values: dict[str, str | None] | None = None) -> None:
+        self.values = values or {}
+
+    def get_config(self, key: str) -> str | None:
+        return self.values.get(key)
+
+
+def test_recurring_cta_config_is_opt_in() -> None:
+    assert not _config_enabled_from_db(_ConfigDb(), "lfg_recurring_02_cta_enabled")
+    assert _config_enabled_from_db(
+        _ConfigDb({"lfg_recurring_02_cta_enabled": "enabled"}),
+        "lfg_recurring_02_cta_enabled",
+    )
+
+
+def test_content_role_panel_channel_id_parser_rejects_bad_config() -> None:
+    assert _parse_config_channel_id(None) == (None, None)
+    assert _parse_config_channel_id("12345") == (12345, None)
+
+    parsed, error = _parse_config_channel_id("not-a-channel")
+
+    assert parsed is None
+    assert error == "Stored channel ID is invalid."

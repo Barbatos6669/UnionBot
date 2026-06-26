@@ -98,6 +98,13 @@ RECURRING_CTA_FALLBACK_DESCRIPTION = (
 )
 
 
+def _config_enabled_from_db(db, key: str, *, default: bool = False) -> bool:
+    raw = db.get_config(key)
+    if raw is None or str(raw).strip() == "":
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
 # ── Cog ─────────────────────────────────────────────────────────────────────
 class LFG(commands.Cog):
     def __init__(self, bot: Bot):
@@ -214,10 +221,7 @@ class LFG(commands.Cog):
 
     # ── Daily 02:00 UTC CTA keeper ─────────────────────────────────────
     def _config_enabled(self, key: str, *, default: bool = False) -> bool:
-        raw = self.bot.db.get_config(key)
-        if raw is None or str(raw).strip() == "":
-            return bool(default)
-        return str(raw).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        return _config_enabled_from_db(self.bot.db, key, default=default)
 
     def _next_daily_cta_window(
         self,
@@ -407,7 +411,7 @@ class LFG(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def ensure_daily_02_cta(self) -> None:
-        if not self._config_enabled(CFG_RECURRING_CTA_ENABLED, default=True):
+        if not self._config_enabled(CFG_RECURRING_CTA_ENABLED, default=False):
             return
         now = datetime.datetime.now(datetime.timezone.utc)
         if self._fetch_active_daily_cta(now):

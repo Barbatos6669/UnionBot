@@ -24,10 +24,8 @@ Math (all integer silver):
     6. ``silver_total`` is a separate manual pool for untradable silver bags.
        It is split only among members who did not opt out of that pool.
 
-The whole split runs inside a single SQLite transaction so a crash
-doesn't leave half the members credited. ``adjust_silver_balance``
-already wraps each member's update + ledger row atomically; we just
-keep calling it inside a confirm-then-execute flow.
+The whole split runs through one SQLite batch transaction so a crash
+or missing profile does not leave half the members credited.
 """
 
 from __future__ import annotations
@@ -198,31 +196,30 @@ def _credit_loot_split(
 ) -> tuple[list[str], list[str]]:
     credited_totals: dict[str, int] = defaultdict(int)
     credited_parts: dict[str, list[str]] = defaultdict(list)
+    entries: list[dict] = []
     failed: list[str] = []
 
-    def _credit(discord_id: str, amount: int, reason: str, part_label: str) -> None:
+    def _queue_credit(discord_id: str, amount: int, reason: str, part_label: str) -> None:
         if amount <= 0:
             return
-        new_bal = db.adjust_silver_balance(
-            discord_id,
-            int(amount),
-            reason=reason,
-            ref_type=ref_type,
-            ref_id=ref_id,
-            actor_id=actor_id,
+        entries.append(
+            {
+                "discord_id": discord_id,
+                "delta": int(amount),
+                "reason": reason,
+                "ref_type": ref_type,
+                "ref_id": ref_id,
+                "actor_id": actor_id,
+                "part_label": part_label,
+            }
         )
-        if new_bal is None:
-            failed.append(f"<@{discord_id}> ({part_label} — no profile)")
-            return
-        credited_totals[discord_id] += int(amount)
-        credited_parts[discord_id].append(part_label)
 
     sc_bonus = int(math.get("sc_bonus") or 0)
     per_head = int(math.get("per_head") or 0)
     silver_per_head = int(math.get("silver_per_head") or 0)
 
     if bonus_recipient_id and sc_bonus > 0:
-        _credit(
+        _queue_credit(
             bonus_recipient_id,
             sc_bonus,
             f"{reason_base} ({bonus_label} bonus)",
@@ -230,10 +227,35 @@ def _credit_loot_split(
         )
 
     for did in normal_recipient_ids:
-        _credit(did, per_head, reason_base, "loot")
+        _queue_credit(did, per_head, reason_base, "loot")
 
     for did in silver_recipient_ids:
-        _credit(did, silver_per_head, f"{reason_base} (silver bags)", "silver bags")
+        _queue_credit(did, silver_per_head, f"{reason_base} (silver bags)", "silver bags")
+
+    if not entries:
+        return [], []
+
+    result = db.adjust_silver_balances_batch(entries)
+    if result is None:
+        return [], ["Transaction failed; no balances were changed."]
+
+    _balances, missing = result
+    if missing:
+        parts_by_missing: dict[str, list[str]] = defaultdict(list)
+        for entry in entries:
+            if entry["discord_id"] in missing:
+                parts_by_missing[entry["discord_id"]].append(entry["part_label"])
+        failed.extend(
+            f"<@{did}> ({', '.join(parts_by_missing.get(did) or ['loot'])} — no profile)"
+            for did in missing
+        )
+        failed.append("Split rolled back; fix missing profiles and run it again.")
+        return [], failed
+
+    for entry in entries:
+        did = entry["discord_id"]
+        credited_totals[did] += int(entry["delta"])
+        credited_parts[did].append(entry["part_label"])
 
     credited = [
         f"<@{did}> **+{_fmt(total)}** _({', '.join(credited_parts[did])})_"

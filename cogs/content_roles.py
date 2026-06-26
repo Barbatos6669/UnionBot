@@ -86,6 +86,16 @@ MAX_OPTIONS_PER_SELECT = 25
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+def _parse_config_channel_id(raw: str | None) -> tuple[int | None, str | None]:
+    raw = str(raw or "").strip()
+    if not raw:
+        return None, None
+    try:
+        return int(raw), None
+    except (TypeError, ValueError):
+        return None, "Stored channel ID is invalid."
+
+
 def _resolve_category_roles(
     guild: discord.Guild, db, category_keys: tuple[str, ...],
 ) -> list[tuple[str, discord.Role]]:
@@ -411,9 +421,29 @@ class ContentRoles(commands.Cog):
         # always wins.
         channel: discord.TextChannel | None = None
         if chan_id:
-            ch = guild.get_channel(int(chan_id))
+            parsed_id, parse_error = _parse_config_channel_id(chan_id)
+            if parse_error or parsed_id is None:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Bad panel channel config",
+                        f"{parse_error} Run `/content-roles set-channel` again.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            ch = guild.get_channel(parsed_id)
             if isinstance(ch, discord.TextChannel):
                 channel = ch
+            else:
+                await interaction.response.send_message(
+                    embed=error_embed(
+                        "Panel channel not found",
+                        "The saved content-role panel channel no longer exists "
+                        "or is not a text channel. Run `/content-roles set-channel` again.",
+                    ),
+                    ephemeral=True,
+                )
+                return
         if channel is None and isinstance(interaction.channel, discord.TextChannel):
             channel = interaction.channel
         if channel is None:
@@ -550,9 +580,29 @@ class ContentRoles(commands.Cog):
         chan_id = db.get_config(CFG_WEAPON_PANEL_CHANNEL) or db.get_config(CFG_PANEL_CHANNEL)
         channel: discord.TextChannel | None = None
         if chan_id:
-            ch = guild.get_channel(int(chan_id))
+            parsed_id, parse_error = _parse_config_channel_id(chan_id)
+            if parse_error or parsed_id is None:
+                await interaction.followup.send(
+                    embed=error_embed(
+                        "Bad weapon panel channel config",
+                        f"{parse_error} Run `/content-roles set-weapon-channel` again.",
+                    ),
+                    ephemeral=True,
+                )
+                return
+            ch = guild.get_channel(parsed_id)
             if isinstance(ch, discord.TextChannel):
                 channel = ch
+            else:
+                await interaction.followup.send(
+                    embed=error_embed(
+                        "Weapon panel channel not found",
+                        "The saved weapon-role panel channel no longer exists "
+                        "or is not a text channel. Run `/content-roles set-weapon-channel` again.",
+                    ),
+                    ephemeral=True,
+                )
+                return
         if channel is None and isinstance(interaction.channel, discord.TextChannel):
             channel = interaction.channel
         if channel is None:

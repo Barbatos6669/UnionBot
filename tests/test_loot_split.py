@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from cogs.loot import compute_loot_split, _parse_member_ids, _parse_silver_split_field
+from sql_database import Database
 
 
 # ── compute_loot_split ────────────────────────────────────────────────────
@@ -179,3 +180,79 @@ def test_parse_silver_split_field_with_optouts() -> None:
     )
     assert amount == 2_500_000
     assert optouts == ["111111111111111111", "222222222222222222"]
+
+
+# ── silver balance batch transaction ─────────────────────────────────────
+
+
+def _fresh_db(tmp_path) -> Database:
+    db = Database(str(tmp_path / "loot.db"))
+    db.connect()
+    db.initialize_all_tables()
+    return db
+
+
+def _insert_profile(db: Database, discord_id: str, *, balance: int = 0) -> None:
+    db.execute(
+        "INSERT INTO user_profiles (discord_id, username, silver_balance) VALUES (?, ?, ?)",
+        (discord_id, f"user-{discord_id}", balance),
+    )
+
+
+def test_adjust_silver_balances_batch_writes_balances_and_ledger(tmp_path) -> None:
+    db = _fresh_db(tmp_path)
+    try:
+        _insert_profile(db, "101", balance=100)
+        _insert_profile(db, "202", balance=0)
+
+        result = db.adjust_silver_balances_batch(
+            [
+                {
+                    "discord_id": "101",
+                    "delta": 25,
+                    "reason": "loot split",
+                    "ref_type": "event",
+                    "ref_id": "88",
+                    "actor_id": "999",
+                },
+                {
+                    "discord_id": "202",
+                    "delta": 50,
+                    "reason": "loot split",
+                    "ref_type": "event",
+                    "ref_id": "88",
+                    "actor_id": "999",
+                },
+            ]
+        )
+
+        assert result == ({"101": 125, "202": 50}, [])
+        assert db.fetch_silver_balance("101") == 125
+        assert db.fetch_silver_balance("202") == 50
+        rows = db.connection.execute("SELECT discord_id, delta FROM silver_ledger").fetchall()
+        assert [(row["discord_id"], row["delta"]) for row in rows] == [
+            ("101", 25),
+            ("202", 50),
+        ]
+    finally:
+        db.close()
+
+
+def test_adjust_silver_balances_batch_rolls_back_when_profile_missing(tmp_path) -> None:
+    db = _fresh_db(tmp_path)
+    try:
+        _insert_profile(db, "101", balance=100)
+
+        result = db.adjust_silver_balances_batch(
+            [
+                {"discord_id": "101", "delta": 25, "reason": "loot split"},
+                {"discord_id": "missing", "delta": 50, "reason": "loot split"},
+            ]
+        )
+
+        assert result == ({}, ["missing"])
+        assert db.fetch_silver_balance("101") == 100
+        count = db.connection.execute("SELECT COUNT(*) AS n FROM silver_ledger").fetchone()["n"]
+        assert count == 0
+    finally:
+        db.close()

@@ -54,6 +54,12 @@ DISABLED_COGS: set[str] = {
     for item in (os.getenv("DISABLED_COGS") or "").replace(";", ",").split(",")
     if item.strip()
 }
+STRICT_STARTUP_MODE = (
+    (os.getenv("STRICT_STARTUP_MODE") or os.getenv("UNIONBOT_STRICT_STARTUP") or "1")
+    .strip()
+    .lower()
+    not in {"0", "false", "no", "off", "disabled"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +113,24 @@ class UnionBot(commands.Bot):
 
     # Cogs whose absence makes the bot unsafe to run. A failure here aborts
     # startup so we don't ship a half-broken instance to production.
-    _REQUIRED_COGS: tuple[str, ...] = (
+    _BASE_REQUIRED_COGS: tuple[str, ...] = (
         "cogs.admin",
         "cogs.applications",
         "cogs.events",
         "cogs.sysadmin",
         "cogs.users_profile",
     )
+    _STRICT_REQUIRED_COGS: tuple[str, ...] = (
+        "cogs.automation",
+        "cogs.bounties",
+        "cogs.lfg",
+        "cogs.loadout_chest",
+    )
+
+    def _required_cogs(self) -> tuple[str, ...]:
+        if not STRICT_STARTUP_MODE:
+            return self._BASE_REQUIRED_COGS
+        return self._BASE_REQUIRED_COGS + self._STRICT_REQUIRED_COGS
 
     async def _load_cogs(self) -> None:
         """Auto-discover and load every ``cogs/*.py`` extension."""
@@ -122,12 +139,17 @@ class UnionBot(commands.Bot):
             return
 
         failed: list[tuple[str, str]] = []
+        required_cogs = set(self._required_cogs())
         for path in sorted(COGS_DIR.glob("*.py")):
             if path.name.startswith("_"):
                 continue
             ext = f"cogs.{path.stem}"
             if path.stem.lower() in DISABLED_COGS:
-                info_log(f"Skipping disabled cog: {ext}")
+                if ext in required_cogs:
+                    failed.append((ext, "disabled via DISABLED_COGS"))
+                    error_log(f"Required cog disabled: {ext}")
+                else:
+                    info_log(f"Skipping disabled cog: {ext}")
                 continue
             try:
                 await self.load_extension(ext)
@@ -138,7 +160,7 @@ class UnionBot(commands.Bot):
 
         if failed:
             failed_names = {name for name, _ in failed}
-            required_missing = sorted(failed_names & set(self._REQUIRED_COGS))
+            required_missing = sorted(failed_names & required_cogs)
             if required_missing:
                 critical_log(
                     "Aborting startup — required cog(s) failed to load: "
